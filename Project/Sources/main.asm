@@ -586,13 +586,12 @@ NotRecovering:
        
        ; Check if ANY button is pressed (PA2-PA7, bits 2-7)
        ANDA  #%11111100             ; Mask out lower 2 bits (PA0-PA1 unused)
-       LBEQ   NoButtonsProcessed    ; No buttons pressed, clear all requests and exit
+       LBEQ   NoButtonsProcessed    ; No buttons pressed, keep existing requests (don't clear!)
 
-       ; Clear all requests first - we'll set them based on actual button presses
-       ; This ensures requests only exist when buttons are actually pressed
-       CLR   Request0
-       CLR   Request1
-       CLR   Request2
+       ; CRITICAL FIX: Do NOT clear requests here!
+       ; Requests are LATCHED - once set, they stay until elevator arrives at that floor
+       ; Only SET requests when buttons are pressed, but don't clear them when buttons are released
+       ; Requests are only cleared in ARRIVED when the elevator reaches that floor
 
        ; Check internal buttons (PA2-PA4 for floors 0, 1, 2)
        ; PA2 (bit 2) = PB3 = Internal F0 button
@@ -638,27 +637,13 @@ ButtonsProcessed:
        LBRA   NoButtons
 
 NoButtonsProcessed:
-       ; No buttons are pressed - clear all request flags IMMEDIATELY
-       ; This prevents stale requests from causing unwanted movement
-       ; CRITICAL: Clear requests BEFORE restoring B register to ensure they're cleared
-       CLR   Request0
-       CLR   Request1
-       CLR   Request2
-       ; Double-check that requests are cleared (defensive programming)
-       LDAA  Request0
-       BNE   ClearAgain              ; Request0 not cleared, clear again
-       LDAA  Request1
-       BNE   ClearAgain              ; Request1 not cleared, clear again
-       LDAA  Request2
-       BNE   ClearAgain              ; Request2 not cleared, clear again
-       BRA   NoButtonsDone
-ClearAgain:
-       CLR   Request0
-       CLR   Request1
-       CLR   Request2
-NoButtonsDone:
+       ; CRITICAL FIX: No buttons are currently pressed
+       ; BUT we MUST NOT clear existing requests!
+       ; Requests are LATCHED - they represent floor calls that must be serviced
+       ; Once a button is pressed, the request stays until the elevator arrives at that floor
+       ; Clearing requests here causes the elevator to lose its target and return to F0
        PULB                          ; Restore B register
-       ; CRITICAL: Exit directly - don't check for targets when no buttons are pressed
+       ; Exit - keep existing requests intact
        LBRA   ISR_Done
 
 NoButtons:
