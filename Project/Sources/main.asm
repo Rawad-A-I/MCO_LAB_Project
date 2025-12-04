@@ -51,7 +51,18 @@ _Startup:
        MOVB  #$02, PUCR 
        MOVB  #%11100000, DDRT
        MOVB  #%00000000, PTT
- 
+       
+       ; Initialize PWM for Buzzer (Channel 0 on PP0 pin)
+       ; Configure PWM Channel 0 for buzzer (~2000 Hz)
+       MOVB  #%00000001, PWME        ; Enable PWM Channel 0 only
+       MOVB  #%00000001, PWMPOL     ; Start high polarity for Channel 0
+       MOVB  #%00000000, PWMCLK     ; Use Clock A for Channel 0
+       MOVB  #%00000001, PWMPRCLK   ; Prescaler: Clock A = E/2 (assuming 8MHz E-clock)
+       ; Set PWM period for ~2000Hz: Period = (E/2) / 2000 = 2000 counts
+       MOVW  #2000, PWMPER0         ; Period = 2000 (for ~2000Hz)
+       ; Set duty cycle to 50% for buzzer
+       MOVW  #1000, PWMDTY0         ; Duty = 1000 (50% of period)
+       BCLR  PWME, #%00000001       ; Initially disable buzzer (will enable when needed)
 
        ; Initialize ADC (Weight Sensor on channel 5)
        MOVB  #%11000000, ATD0CTL2    ; Power up ATD
@@ -274,21 +285,25 @@ DownLoop:
        BRA   DownLoop
 
 ARRIVED:
-       ; Turn off green LED
+       ; Turn off green and yellow LEDs
        BCLR  PTT, #%11000000
-       ; Buzzer beeps for 2 seconds
-       BSET  PTT, #%00100000        ; Turn ON red LED and buzzer
        
-       LDAB #20
+       ; Turn ON red LED
+       BSET  PTT, #%00100000
+       
+       ; Buzzer beeps for 2 seconds using PWM
+       BSET  PWME, #%00000001       ; Enable PWM Channel 0 (buzzer)
+       
+       LDAB  #20                    ; 20 * 100ms = 2 seconds
 BuzzDelay:
        JSR   DELAY
        DECB
        BNE   BuzzDelay
        
-       BSET  PTT, #%00100000        ; Turn OFF buzzer but keep red LED ON
+       ; Turn OFF buzzer but keep red LED ON
+       BCLR  PWME, #%00000001       ; Disable PWM Channel 0 (buzzer)
        
-       ; Red LED stays ON (no blinking)
-       BSET  PTT, #%00100000        ; Ensure red LED is ON
+       ; Red LED stays ON (already set above)
        
        ; Display current floor on LCD
        LDAA  #%00000001
@@ -316,14 +331,17 @@ ArrDone:
        CLR   Target
        CLR   State
        
-       ; Wait with red LED ON
-       LDAB  #10
+       ; Wait with red LED ON (door open)
+       LDAB  #10                    ; 10 * 100ms = 1 second
 ArrWait:
        JSR   DELAY
        DECB
        BNE   ArrWait
        
-       BCLR  PTT, #%00100000        ; Turn OFF red LED
+       BCLR  PTT, #%00100000        ; Turn OFF red LED (door closed)
+       
+       ; After arriving, check if there are more requests
+       ; The ISR will set a new Target if there are pending requests
        JMP   MainLoop
 
 MCCNT_ISR:
@@ -347,6 +365,7 @@ WaitADC:
        MOVB  #1, Overload           ; Set overload flag
        MOVB  #3, State              ; State = OVERLOAD
        BCLR  PTT, #%11000000        ; Turn off green and yellow LEDs
+       BSET  PWME, #%00000001       ; Enable buzzer for overload warning
        RTI                          ; Exit ISR during overload
 
 WeightOK:
@@ -355,8 +374,9 @@ WeightOK:
        CMPA  #3                     ; Check if was in overload state
        BNE   NotRecovering
        
-       ; Recovering from overload, turn off red LED
+       ; Recovering from overload, turn off red LED and buzzer
        BCLR  PTT, #%00100000        ; Turn OFF red LED
+       BCLR  PWME, #%00000001       ; Turn OFF buzzer
        CLR   State                  ; Reset state to IDLE
        
 NotRecovering:
@@ -405,9 +425,11 @@ CheckPB8:
 
 NoButtons:
        ; REMEMBER YA RAWAD W REEM: Priority: serve closest floor first
+       ; Only set new Target if no current Target (elevator is idle or just arrived)
        LDAA  Target
-       BNE   ISR_Done
+       BNE   ISR_Done               ; Already has a target, don't change it
        
+       ; Check which floor we're on and find next request
        LDAA  Current
        BEQ   CheckFromF0
        CMPA  #1
@@ -426,32 +448,45 @@ CheckF0toF2:
        BRA   ISR_Done
 
 CheckFromF1:
-       ; Check both up and down, serve closest
+       ; Check both up and down, serve closest first
+       ; Priority: If both F0 and F2 requested, serve F0 first (closer when going down)
        LDAA  Request0
-       BEQ   CheckF1Up
+       BEQ   CheckF1Up              ; No F0 request, check F2
        LDAB  Request2
-       BEQ   ServeF0FromF1          ; Only F0 requested
-       ; Both requested, F0 is closer
-       MOVB  #0, Target
+       BEQ   ServeF0FromF1          ; Only F0 requested, go to F0
+       ; Both F0 and F2 requested
+       ; Check current direction: if moving down or idle, serve F0 first
+       LDAB  State
+       CMPB  #2                      ; State = DOWN?
+       BEQ   ServeF0FromF1           ; Moving down, serve F0 first
+       CMPB  #0                      ; State = IDLE?
+       BEQ   ServeF0FromF1           ; Idle, serve F0 first (closer)
+       ; Moving up, serve F2 first
+       MOVB  #2, Target
        BRA   ISR_Done
 ServeF0FromF1:
        MOVB  #0, Target
        BRA   ISR_Done
 CheckF1Up:
        LDAA  Request2
-       BEQ   ISR_Done
+       BEQ   ISR_Done               ; No requests, exit
        MOVB  #2, Target
        BRA   ISR_Done
 
 CheckFromF2:
+       ; When on F2, check requests in descending order: F1, then F0
        LDAA  Request1
-       BEQ   CheckF2toF0
+       BEQ   CheckF2toF0            ; No F1 request, check F0
+       ; F1 is requested, go to F1 first (will handle F0 after if needed)
        MOVB  #1, Target
        BRA   ISR_Done
 CheckF2toF0:
+       ; No F1 request, check F0
        LDAA  Request0
-       BEQ   ISR_Done
+       BEQ   ISR_Done               ; No F0 request either, exit
+       ; F0 is requested, go directly to F0
        MOVB  #0, Target
+       BRA   ISR_Done
 
 ISR_Done:
        RTI                          ; Return from interrupt
