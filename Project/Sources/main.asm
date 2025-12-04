@@ -54,23 +54,27 @@ _Startup:
        
        ; Initialize PWM for Buzzer (Channel 0 on PP0 pin)
        ; Based on Lab 9 Task 1: Create 1kHz signal with 50% duty cycle
+       ; IMPORTANT: Configure PWM registers BEFORE enabling
+       
        ; First disable PWM before configuring
        BCLR  PWME, #%00000001       ; Disable PWM Channel 0 first
        
-       ; Configure PWM polarity (start high)
-       BSET  PWMPOL, #%00000001     ; Set polarity high for Channel 0
-       
-       ; Configure clock source - use Clock A
-       BCLR  PWMCLK, #%00000001     ; Channel 0 uses Clock A
-       
-       ; Configure prescaler for Clock A
+       ; Configure prescaler for Clock A FIRST
        ; PCKA[2:0] = 000 means Clock A = E/1 (no prescale)
        ; PCKA[2:0] = 001 means Clock A = E/2
        ; PCKA[2:0] = 010 means Clock A = E/4
        ; For 8MHz E-clock, to get 1kHz: Period = 8,000,000 / 1000 = 8000
        ; Using E/2: Period = 4,000,000 / 1000 = 4000
        ; Using E/4: Period = 2,000,000 / 1000 = 2000 (better for 16-bit period)
-       MOVB  #%00000010, PWMPRCLK   ; PCKA = E/4 (bits PCKA[2:0] = 010)
+       ; Set PCKA[2:0] = 010 (E/4): Clear PCKA0, Set PCKA1, Clear PCKA2
+       BCLR  PWMPRCLK, #%00000101   ; Clear PCKA0 (bit 0) and PCKA2 (bit 2)
+       BSET  PWMPRCLK, #%00000010   ; Set PCKA1 (bit 1) for E/4
+       
+       ; Configure clock source - use Clock A
+       BCLR  PWMCLK, #%00000001     ; Channel 0 uses Clock A
+       
+       ; Configure PWM polarity (start high)
+       BSET  PWMPOL, #%00000001     ; Set polarity high for Channel 0
        
        ; Set PWM period for 1kHz (as per Lab 9 Task 1)
        ; With E/4 = 2MHz, Period = 2,000,000 / 1000 = 2000
@@ -140,7 +144,14 @@ MainLoop:
        ; Additional safety check: ensure Current is not already 0
        LDAB  Current
        BEQ   ClearTarget            ; Already at F0, clear target
-       JMP   MOVEDOWN               ; else, move down
+       ; Additional check: if Target is 0 and Current is 1, we can move down
+       CMPB  #1                      ; Check if Current is 1
+       BNE   DoMoveDown             ; If not 1, proceed normally
+       LDAA  Target
+       BEQ   DoMoveDown             ; If Target is 0, it's valid to move down
+       BRA   ClearTarget            ; Otherwise, clear target
+DoMoveDown:
+       JMP   MOVEDOWN               ; Move down
 
 ClearTarget:
        CLR   Target                 ; Clear target
@@ -294,27 +305,31 @@ DownLoop:
        LDAA  BlinkCount
        BNE   DownLoop
        
-       ; Check if we've already reached the target before decrementing
+       ; After blinking, check if we've reached target BEFORE moving
        LDAA  Target
        LDAB  Current
        CBA
-       BEQ   ARRIVED              ; Already at target, don't decrement
+       BEQ   ARRIVED              ; Already at target, go to arrived
        
-       ; Decrement the current floor
+       ; Safety check: if Current is already 0, we're at F0
+       LDAB  Current
+       BEQ   ARRIVED              ; Already at F0, go to arrived
+       
+       ; Now it's safe to decrement - we know Current > 0 and Current != Target
        DEC   Current
        
-       ; Check for underflow (Current should never be < 0)
+       ; After decrementing, check if we've reached the target
+       LDAA  Target
+       LDAB  Current
+       CBA
+       BEQ   ARRIVED              ; Reached target, go to arrived
+       
+       ; Check for underflow (should never happen, but safety check)
        LDAB  Current
        CMPB  #$FF                 ; Check if underflow occurred (DEC 0 = $FF)
        BEQ   FixUnderflow         ; Fix underflow if it happened
        
-       ; compare with requested
-       LDAA  Target
-       LDAB  Current
-       CBA
-       ; if equal, branch to ARRIVED
-       BEQ   ARRIVED
-       ; else continue DownLoop
+       ; Not at target yet, continue moving down
        MOVB  #10, BlinkCount
        BRA   DownLoop
        
@@ -331,11 +346,13 @@ ARRIVED:
        
        ; Buzzer beeps for 2 seconds using PWM
        ; Enable PWM Channel 0 (buzzer) - PP0 pin
+       ; Make sure PWM is properly configured before enabling
        BSET  PWME, #%00000001       ; Enable PWM Channel 0 (buzzer)
        
-       LDAB  #20                    ; 20 * 100ms = 2 seconds
+       ; Wait for 2 seconds (20 * 100ms = 2000ms)
+       LDAB  #20
 BuzzDelay:
-       JSR   DELAY
+       JSR   DELAY                  ; 100ms delay
        DECB
        BNE   BuzzDelay
        
