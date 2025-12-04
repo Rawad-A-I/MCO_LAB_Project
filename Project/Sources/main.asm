@@ -54,37 +54,38 @@ _Startup:
        
        ; Initialize PWM for Buzzer (Channel 0 on PP0 pin)
        ; Based on Lab 9 Task 1: Create 1kHz signal with 50% duty cycle
-       ; IMPORTANT: Configure PWM registers BEFORE enabling
+       ; Reference: Lab-9-Tasks.docx example code (adapted for Channel 0)
        
        ; First disable PWM before configuring
        BCLR  PWME, #%00000001       ; Disable PWM Channel 0 first
        
        ; Configure Port P pin 0 as output (PP0 for PWM Channel 0)
-       ; PWM pins are usually auto-configured, but set DDRP to be safe
        BSET  DDRP, #%00000001       ; Set PP0 as output
-       
-       ; Initialize all PWM registers to known state
-       ; Configure prescaler for Clock A: PCKA[2:0] = 010 (E/4)
-       ; For 8MHz E-clock: E/4 = 2MHz
-       ; To get 1kHz: Period = 2,000,000 / 1000 = 2000
-       CLR   PWMPRCLK              ; Clear all prescaler bits first
-       BSET  PWMPRCLK, #%00000010   ; Set PCKA1 (bit 1) for E/4 prescaler
        
        ; Configure clock source - use Clock A for Channel 0
        BCLR  PWMCLK, #%00000001     ; Channel 0 uses Clock A (bit 0 = 0)
        
+       ; Configure prescaler for Clock A
+       ; PWMPRCLK = $03 means PCKA[2:0] = 011 = E/8 (multiplier by 8)
+       ; Calculation for 1kHz: Period = 250, so 250 * 8 * 0.5μs = 1000μs = 1ms = 1kHz
+       ; (Assuming bus clock = 2MHz, so period = 0.5μs)
+       MOVB  #$03, PWMPRCLK         ; Set prescaler to E/8 (PCKA[2:0] = 011)
+       
+       ; Ensure channels 0 and 1 are NOT concatenated (for 8-bit mode)
+       BCLR  PWMCTL, #%00010000     ; Clear CON01 bit (channels 0 and 1 separate)
+       
        ; Configure PWM polarity (start high)
-       BSET  PWMPOL, #%00000001     ; Set polarity high for Channel 0
+       BSET  PWMPOL, #%00000001     ; Set polarity high for Channel 0 (bit 0 = 1)
        
-       ; Set PWM period for 1kHz (as per Lab 9 Task 1)
-       ; With E/4 = 2MHz, Period = 2,000,000 / 1000 = 2000
-       MOVW  #2000, PWMPER0         ; Period = 2000 (for 1kHz)
+       ; Clear PWM counter for Channel 0 (important for proper startup)
+       CLR   PWMCNT0                ; Clear PWM Channel 0 counter
        
-       ; Set duty cycle to 50% for buzzer (as per Lab 9 Task 1)
-       MOVW  #1000, PWMDTY0         ; Duty = 1000 (50% of period = 2000/2)
+       ; Set PWM period for 1kHz (8-bit register for single channel)
+       ; Period = 250: 250 * 8 * 0.5μs = 1000μs = 1ms = 1kHz
+       MOVB  #250, PWMPER0          ; Period = 250 (for 1kHz with E/8 prescaler)
        
-       ; Small delay to let registers settle
-       JSR   DelayADC
+       ; Set duty cycle to 50% for buzzer (8-bit register)
+       MOVB  #125, PWMDTY0          ; Duty = 125 (50% of period = 250/2)
        
        ; Keep PWM disabled initially (will enable when needed)
        BCLR  PWME, #%00000001       ; Ensure buzzer is disabled
@@ -291,13 +292,15 @@ MOVEDOWN:
        MOVB  #10, BlinkCount
 
 DownLoop:
-       ; Check target FIRST - critical for preventing freeze
+       ; CRITICAL: Check target at the START of each loop iteration
+       ; This prevents freeze when Target gets cleared or changed
        LDAA  Target
+       BEQ   DownLoopExit         ; Target cleared, exit immediately
        LDAB  Current
        CBA
        BEQ   ARRIVED              ; Already at target, go to arrived immediately
        
-       ; Safety check: if Current is already 0, we're at F0 (shouldn't happen, but safety)
+       ; Safety check: if Current is already 0, we're at F0
        LDAB  Current
        BEQ   ARRIVED              ; Already at F0, go to arrived
        
@@ -310,9 +313,9 @@ DownLoop:
        JSR   DELAY
        DEC   BlinkCount
        LDAA  BlinkCount
-       BNE   DownLoop
+       BNE   DownLoop             ; Continue blinking if not done
        
-       ; After blinking cycle completes, check target again
+       ; After blinking cycle completes, check target again BEFORE decrementing
        LDAA  Target
        BEQ   DownLoopExit         ; Target was cleared, exit to main loop
        LDAB  Current
@@ -361,10 +364,9 @@ ARRIVED:
        ; Buzzer beeps for 2 seconds using PWM
        ; Enable PWM Channel 0 (buzzer) - PP0 pin
        ; Make sure PWM is properly configured before enabling
-       ; Re-verify PWM configuration is correct
        BSET  PWME, #%00000001       ; Enable PWM Channel 0 (buzzer)
        
-       ; Small delay to let PWM start
+       ; Small delay to let PWM start generating signal
        JSR   DELAY
        
        ; Wait for 2 seconds (20 * 100ms = 2000ms)
