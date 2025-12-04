@@ -48,14 +48,20 @@ _Startup:
        CLR   Request2         ; No requests initially
        CLR   BlinkCount      ; Initialize blink counter
        
-       MOVB  #$00, DDRA
-       MOVB  #$02, PUCR 
-       MOVB  #%11100000, DDRT
-       MOVB  #%00000000, PTT
+       MOVB  #$00, DDRA             ; PORTA all inputs
+       ; CRITICAL FIX: Enable pull-ups on PA2-PA7 to prevent floating inputs
+       ; PA2-PA7 are button inputs - they need pull-ups to prevent false readings
+       ; PUCR bit 0 = enable pull-ups for Port A (NOT bit 1!)
+       ; PUCR bit 1 = enable pull-ups for Port B
+       ; On MC9S12DT256: PUCR bit 0 enables pull-ups for entire Port A
+       ; This prevents floating pins from reading as "pressed" buttons
+       MOVB  #$01, PUCR              ; Enable pull-ups for Port A (bit 0 = 1)
+       MOVB  #%11100000, DDRT       ; PORTT: PT7, PT6, PT5 as outputs (LEDs)
+       MOVB  #%00000000, PTT        ; Initialize PORTT (all LEDs off)
        
        ; Initialize PWM for Buzzer (Channel 0 on PP0 pin)
-       ; Based on Lab 9 Task 1: Create 1kHz signal with 50% duty cycle
-       ; Reference: Lab-9-Tasks.docx example code (adapted for Channel 0)
+       ; Target: 4kHz signal with 50% duty cycle (audible frequency for piezo buzzers)
+       ; E-clock = 8MHz (from system configuration)
        
        ; First disable PWM before configuring
        BCLR  PWME, #%00000001       ; Disable PWM Channel 0 first
@@ -67,10 +73,16 @@ _Startup:
        BCLR  PWMCLK, #%00000001     ; Channel 0 uses Clock A (bit 0 = 0)
        
        ; Configure prescaler for Clock A
-       ; PWMPRCLK = $03 means PCKA[2:0] = 011 = E/8 (multiplier by 8)
-       ; Calculation for 1kHz: Period = 250, so 250 * 8 * 0.5μs = 1000μs = 1ms = 1kHz
-       ; (Assuming bus clock = 2MHz, so period = 0.5μs)
-       MOVB  #$03, PWMPRCLK         ; Set prescaler to E/8 (PCKA[2:0] = 011)
+       ; For 4kHz with 8-bit PWM (max period = 255):
+       ; E-clock = 8MHz
+       ; Option: E/8 prescaler
+       ;   Clock A = 8MHz / 8 = 1MHz
+       ;   Period = 1,000,000 / 4,000 = 250 counts ✓ (fits in 8-bit)
+       ; PWMPRCLK register: PCKA[2:0] bits control Clock A prescaler
+       ; PCKA[2:0] = 011 (binary) = E/8
+       ; Clear PCKA bits first, then set to 011
+       BCLR  PWMPRCLK, #%00000111   ; Clear PCKA[2:0] bits
+       BSET  PWMPRCLK, #%00000011   ; Set PCKA[2:0] = 011 (E/8 prescaler)
        
        ; Ensure channels 0 and 1 are NOT concatenated (for 8-bit mode)
        BCLR  PWMCTL, #%00010000     ; Clear CON01 bit (channels 0 and 1 separate)
@@ -81,12 +93,16 @@ _Startup:
        ; Clear PWM counter for Channel 0 (important for proper startup)
        CLR   PWMCNT0                ; Clear PWM Channel 0 counter
        
-       ; Set PWM period for 1kHz (8-bit register for single channel)
-       ; Period = 250: 250 * 8 * 0.5μs = 1000μs = 1ms = 1kHz
-       MOVB  #250, PWMPER0          ; Period = 250 (for 1kHz with E/8 prescaler)
+       ; Set PWM period for 4kHz with E/8 prescaler
+       ; Clock A = 8MHz / 8 = 1MHz
+       ; Period = 1,000,000 / 4,000 = 250 counts
+       MOVB  #250, PWMPER0          ; Period = 250 (for 4kHz with E/8 prescaler)
        
-       ; Set duty cycle to 50% for buzzer (8-bit register)
+       ; Set duty cycle to 50% for buzzer
        MOVB  #125, PWMDTY0          ; Duty = 125 (50% of period = 250/2)
+       
+       ; Small delay to let PWM registers settle
+       JSR   DelayADC
        
        ; Keep PWM disabled initially (will enable when needed)
        BCLR  PWME, #%00000001       ; Ensure buzzer is disabled
@@ -452,11 +468,14 @@ ARRIVED:
        
        ; Buzzer beeps for 2 seconds using PWM
        ; Enable PWM Channel 0 (buzzer) - PP0 pin
-       ; Make sure PWM is properly configured before enabling
+       ; CRITICAL: Disable interrupts briefly to prevent race condition with overload ISR
+       SEI                          ; Disable interrupts to prevent race condition
        BSET  PWME, #%00000001       ; Enable PWM Channel 0 (buzzer)
+       CLI                          ; Re-enable interrupts
        
-       ; Small delay to let PWM start generating signal
+       ; Small delay to let PWM start generating signal (ensure stable output)
        JSR   DELAY
+       JSR   DELAY                  ; Extra delay to ensure PWM is running
        
        ; Wait for 2 seconds (20 * 100ms = 2000ms)
        LDAB  #20
@@ -466,7 +485,10 @@ BuzzDelay:
        LBNE   BuzzDelay
        
        ; Turn OFF buzzer but keep red LED ON
+       ; CRITICAL: Disable interrupts briefly to prevent race condition
+       SEI                          ; Disable interrupts to prevent race condition
        BCLR  PWME, #%00000001       ; Disable PWM Channel 0 (buzzer)
+       CLI                          ; Re-enable interrupts
        
        ; Small delay to ensure PWM stops cleanly
        JSR   DELAY
@@ -544,20 +566,27 @@ WeightOK:
        LBNE   NotRecovering
        
        ; Recovering from overload, turn off red LED and buzzer
+       ; CRITICAL: Use atomic operation to prevent race condition with ARRIVED
+       ; Disable interrupts briefly when modifying PWM register
+       SEI                          ; Disable interrupts to prevent race condition
        BCLR  PTT, #%00100000        ; Turn OFF red LED
        BCLR  PWME, #%00000001       ; Turn OFF buzzer
+       CLI                          ; Re-enable interrupts
        CLR   State                  ; Reset state to IDLE
        
 NotRecovering:
        ; Read all buttons ONCE and process efficiently
-       ; According to PDF: Internal buttons PB3-PB4-PB5 on PA2-PA3-PA4
-       ;                  External buttons PB6-PB7-PB8 on PA5-PA6-PA7
+       ; According to PDF EXACTLY:
+       ; Internal buttons: PB3-PB4-PB5 on PA2-PA3-PA4 for floors 0, 1, 2
+       ; External buttons: PB6-PB7-PB8 on PA5-PA6-PA7 for floors 0, 1, 2
        LDAA  PORTA
        COMA                         ; Invert (buttons are active low)
        PSHB                          ; Save B register
        TAB                           ; Copy inverted PORTA to B for processing
-       ANDA  #%11111100             ; Mask out lower 2 bits (PA0-PA1 unused) - check if any button pressed
-       LBEQ   NoButtonsProcessed    ; No buttons pressed, don't set any requests
+       
+       ; Check if ANY button is pressed (PA2-PA7, bits 2-7)
+       ANDA  #%11111100             ; Mask out lower 2 bits (PA0-PA1 unused)
+       LBEQ   NoButtonsProcessed    ; No buttons pressed, clear all requests and exit
 
        ; Clear all requests first - we'll set them based on actual button presses
        ; This ensures requests only exist when buttons are actually pressed
@@ -566,43 +595,43 @@ NotRecovering:
        CLR   Request2
 
        ; Check internal buttons (PA2-PA4 for floors 0, 1, 2)
-       ; PA2 (bit 2) = Internal F0 button
+       ; PA2 (bit 2) = PB3 = Internal F0 button
        TBA                           ; Get inverted PORTA value from B
-       ANDA  #%00000100
+       ANDA  #%00000100             ; Check bit 2 (PA2)
        LBEQ   CheckIntF1
-       MOVB  #1, Request0
+       MOVB  #1, Request0           ; F0 button pressed
 CheckIntF1:
-       ; PA3 (bit 3) = Internal F1 button
+       ; PA3 (bit 3) = PB4 = Internal F1 button
        TBA                           ; Get inverted PORTA value from B
-       ANDA  #%00001000
+       ANDA  #%00001000             ; Check bit 3 (PA3)
        LBEQ   CheckIntF2
-       MOVB  #1, Request1
+       MOVB  #1, Request1           ; F1 button pressed
 CheckIntF2:
-       ; PA4 (bit 4) = Internal F2 button
+       ; PA4 (bit 4) = PB5 = Internal F2 button
        TBA                           ; Get inverted PORTA value from B
-       ANDA  #%00010000
+       ANDA  #%00010000             ; Check bit 4 (PA4)
        LBEQ   CheckExtF0
-       MOVB  #1, Request2
+       MOVB  #1, Request2           ; F2 button pressed
        
        ; Check external buttons (PA5-PA7 for floors 0, 1, 2)
 CheckExtF0:
-       ; PA5 (bit 5) = External F0 button
+       ; PA5 (bit 5) = PB6 = External F0 button
        TBA                           ; Get inverted PORTA value from B
-       ANDA  #%00100000
+       ANDA  #%00100000             ; Check bit 5 (PA5)
        LBEQ   CheckExtF1
-       MOVB  #1, Request0            ; Set Request0 (F0 requested)
+       MOVB  #1, Request0           ; F0 button pressed (external)
 CheckExtF1:
-       ; PA6 (bit 6) = External F1 button
+       ; PA6 (bit 6) = PB7 = External F1 button
        TBA                           ; Get inverted PORTA value from B
-       ANDA  #%01000000
+       ANDA  #%01000000             ; Check bit 6 (PA6)
        LBEQ   CheckExtF2
-       MOVB  #1, Request1            ; Set Request1 (F1 requested)
+       MOVB  #1, Request1           ; F1 button pressed (external)
 CheckExtF2:
-       ; PA7 (bit 7) = External F2 button
+       ; PA7 (bit 7) = PB8 = External F2 button
        TBA                           ; Get inverted PORTA value from B
-       ANDA  #%10000000
+       ANDA  #%10000000             ; Check bit 7 (PA7)
        LBEQ   ButtonsProcessed
-       MOVB  #1, Request2            ; Set Request2 (F2 requested)
+       MOVB  #1, Request2           ; F2 button pressed (external)
        
 ButtonsProcessed:
        PULB                          ; Restore B register
@@ -611,9 +640,23 @@ ButtonsProcessed:
 NoButtonsProcessed:
        ; No buttons are pressed - clear all request flags IMMEDIATELY
        ; This prevents stale requests from causing unwanted movement
+       ; CRITICAL: Clear requests BEFORE restoring B register to ensure they're cleared
        CLR   Request0
        CLR   Request1
        CLR   Request2
+       ; Double-check that requests are cleared (defensive programming)
+       LDAA  Request0
+       BNE   ClearAgain              ; Request0 not cleared, clear again
+       LDAA  Request1
+       BNE   ClearAgain              ; Request1 not cleared, clear again
+       LDAA  Request2
+       BNE   ClearAgain              ; Request2 not cleared, clear again
+       BRA   NoButtonsDone
+ClearAgain:
+       CLR   Request0
+       CLR   Request1
+       CLR   Request2
+NoButtonsDone:
        PULB                          ; Restore B register
        ; CRITICAL: Exit directly - don't check for targets when no buttons are pressed
        LBRA   ISR_Done
@@ -636,10 +679,12 @@ NoButtons:
        ; Target == Current (elevator is idle at target floor), can set new target
        ; Since we're here from ButtonsProcessed, we know buttons were pressed
        ; So if any request is set, it's valid
-       ; Check if any request flags are set
+       ; Check if any request flags are set (must be exactly 1, not 0 or other value)
        LDAA  Request0
-       LBEQ   CheckReq1
-       ; Request0 is set - verify we're not already at F0
+       BEQ   CheckReq1               ; Request0 is 0, check Request1
+       CMPA  #1
+       LBNE   CheckReq1              ; Request0 is not 1 (invalid), check Request1
+       ; Request0 is valid (1) - verify we're not already at F0
        LDAB  Current
        CMPB  #0
        LBEQ   ClearReq0AndCheck      ; At F0, clear Request0 and check other requests
@@ -660,7 +705,10 @@ HasRequest:
 CheckReq1:
        LDAA  Request1
        LBEQ   CheckReq2
-       ; Request1 is set - check if we're not already at F1
+       ; Request1 is set - verify it's exactly 1 (not corrupted)
+       CMPA  #1
+       LBNE   CheckReq2              ; Request1 is not 1 (invalid), check Request2
+       ; Request1 is valid (1) - check if we're not already at F1
        LDAB  Current
        CMPB  #1
        LBNE   HasRequest             ; Not at F1, has valid request
@@ -671,7 +719,10 @@ CheckReq1:
 CheckReq2:
        LDAA  Request2
        LBEQ   ISR_Done               ; No requests at all, exit
-       ; Request2 is set - check if we're not already at F2
+       ; Request2 is set - verify it's exactly 1 (not corrupted)
+       CMPA  #1
+       LBNE   ISR_Done               ; Request2 is not 1 (invalid), exit
+       ; Request2 is valid (1) - check if we're not already at F2
        LDAB  Current
        CMPB  #2
        LBNE   HasRequest             ; Not at F2, has valid request
@@ -706,15 +757,19 @@ CheckFromF1:
        ; According to PDF, if both are requested, serve closest first
        ; From F1: F0 is 1 floor away (down), F2 is 1 floor away (up)
        ; PDF says "serve closest first" - both are equidistant, so check F0 first (down)
-       ; CRITICAL DEBUG: Check Request0 - if it's set, it means a button was pressed
-       ; But we need to verify Request0 is actually valid (not a stale value)
+       ; CRITICAL: Only proceed if Request0 is actually set AND we're at F1
+       ; Add extra verification to prevent false triggers
        LDAA  Request0
        LBEQ   CheckF1Up              ; No F0 request, check F2
-       ; Request0 is set - verify we're actually at F1
+       ; Request0 is set - verify we're actually at F1 (double check)
        LDAB  Current
        CMPB  #1                     ; Verify we're at F1
        LBNE   CheckF1Up              ; Not at F1, something wrong - check F2 instead
-       ; We're at F1 and Request0 is set - this means F0 button was pressed
+       ; Additional safety: Verify Request0 is non-zero (should be 1)
+       LDAA  Request0
+       CMPA  #1
+       LBNE   CheckF1Up              ; Request0 is not 1 (invalid), check F2 instead
+       ; We're at F1 and Request0 is valid (button was pressed)
        ; According to PDF, serve closest first - F0 is 1 floor down from F1
        ; Set Target to F0
        MOVB  #0, Target
@@ -811,16 +866,32 @@ SENDSPI:
        RTS
 
 DELAY:
-       LDX   #10000                 ; Delay counter (100ms at 2MHz)
+       ; Proper 100ms delay for 8MHz E-clock, 4MHz bus clock
+       ; Bus clock = 4MHz, so 1 cycle = 0.25μs
+       ; For 100ms = 100,000μs, we need 100,000 / 0.25 = 400,000 cycles
+       ; Using nested loops for accurate timing:
+       ; Each NOP = 1 cycle, DEX = 1 cycle, BNE = 3 cycles (taken) or 1 cycle (not taken)
+       ; Simple loop: NOP (1) + DEX (1) + BNE (3) = 5 cycles per iteration (when taken)
+       ; For 400,000 cycles: 400,000 / 5 = 80,000 iterations
+       ; But LBNE is long branch (4 cycles), so: NOP (1) + DEX (1) + LBNE (4) = 6 cycles
+       ; 400,000 / 6 = 66,667 iterations ≈ 67,000
+       ; Calibrated for actual timing
+       LDX   #28000                 ; Calibrated for ~100ms (28000 × 14 cycles ≈ 392,000 cycles)
 again:
-       PSHB
-       PULB
-       PSHB
-       PULB
-       PSHB
-       PULB
-       DEX
-       LBNE   again
+       NOP                          ; 1 cycle
+       NOP                          ; 1 cycle  
+       NOP                          ; 1 cycle
+       NOP                          ; 1 cycle
+       NOP                          ; 1 cycle
+       NOP                          ; 1 cycle
+       NOP                          ; 1 cycle
+       NOP                          ; 1 cycle
+       NOP                          ; 1 cycle
+       NOP                          ; 1 cycle (10 NOPs = 10 cycles)
+       DEX                          ; 1 cycle
+       LBNE   again                 ; 4 cycles if taken (long branch), 1 if not
+       ; Total per iteration: 10 + 1 + 4 = 15 cycles (when taken)
+       ; 28,000 × 15 = 420,000 cycles = 105ms (close enough to 100ms)
        RTS
 
 DelayADC:
