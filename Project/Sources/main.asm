@@ -9,17 +9,17 @@
 ;***********************
 
 ; export symbols
-       XDEF Entry, _Startup            ; export 'Entry' symbol
+            XDEF Entry, _Startup            ; export 'Entry' symbol
        ABSENTRY Entry                  ; for absolute assembly: mark this as application entry point
 
 ; Include derivative-specific definitions 
-       INCLUDE 'derivative.inc'
+		INCLUDE 'derivative.inc' 
 
 ROMStart    EQU  $4000  ; absolute address to place my code/constant data
 
 ; variable/data section
-       ORG RAMStart
-; Insert here your data definition.
+            ORG RAMStart
+ ; Insert here your data definition.
 Current     DS.B 1      ; 0=GND, 1=1st, 2=2nd
 Target      DS.B 1
 State       DS.B 1      ; 0=IDLE, 1=UP, 2=DOWN, 3=OVERLOADED
@@ -31,11 +31,11 @@ Request2    DS.B 1
 BlinkCount  DS.B 1
 
 ; code section
-       ORG   ROMStart
+            ORG   ROMStart
 
 Entry:
 _Startup:
-       LDS   #RAMEnd+1       ; initialize the stack pointer
+            LDS   #RAMEnd+1       ; initialize the stack pointer
        CLI                   ; enable interrupts
 
        ; Initialize variables
@@ -53,16 +53,34 @@ _Startup:
        MOVB  #%00000000, PTT
        
        ; Initialize PWM for Buzzer (Channel 0 on PP0 pin)
-       ; Configure PWM Channel 0 for buzzer (~2000 Hz)
-       MOVB  #%00000001, PWME        ; Enable PWM Channel 0 only
-       MOVB  #%00000001, PWMPOL     ; Start high polarity for Channel 0
-       MOVB  #%00000000, PWMCLK     ; Use Clock A for Channel 0
-       MOVB  #%00000001, PWMPRCLK   ; Prescaler: Clock A = E/2 (assuming 8MHz E-clock)
-       ; Set PWM period for ~2000Hz: Period = (E/2) / 2000 = 2000 counts
-       MOVW  #2000, PWMPER0         ; Period = 2000 (for ~2000Hz)
-       ; Set duty cycle to 50% for buzzer
-       MOVW  #1000, PWMDTY0         ; Duty = 1000 (50% of period)
-       BCLR  PWME, #%00000001       ; Initially disable buzzer (will enable when needed)
+       ; Based on Lab 9 Task 1: Create 1kHz signal with 50% duty cycle
+       ; First disable PWM before configuring
+       BCLR  PWME, #%00000001       ; Disable PWM Channel 0 first
+       
+       ; Configure PWM polarity (start high)
+       BSET  PWMPOL, #%00000001     ; Set polarity high for Channel 0
+       
+       ; Configure clock source - use Clock A
+       BCLR  PWMCLK, #%00000001     ; Channel 0 uses Clock A
+       
+       ; Configure prescaler for Clock A
+       ; PCKA[2:0] = 000 means Clock A = E/1 (no prescale)
+       ; PCKA[2:0] = 001 means Clock A = E/2
+       ; PCKA[2:0] = 010 means Clock A = E/4
+       ; For 8MHz E-clock, to get 1kHz: Period = 8,000,000 / 1000 = 8000
+       ; Using E/2: Period = 4,000,000 / 1000 = 4000
+       ; Using E/4: Period = 2,000,000 / 1000 = 2000 (better for 16-bit period)
+       MOVB  #%00000010, PWMPRCLK   ; PCKA = E/4 (bits PCKA[2:0] = 010)
+       
+       ; Set PWM period for 1kHz (as per Lab 9 Task 1)
+       ; With E/4 = 2MHz, Period = 2,000,000 / 1000 = 2000
+       MOVW  #2000, PWMPER0         ; Period = 2000 (for 1kHz)
+       
+       ; Set duty cycle to 50% for buzzer (as per Lab 9 Task 1)
+       MOVW  #1000, PWMDTY0         ; Duty = 1000 (50% of period = 2000/2)
+       
+       ; Keep PWM disabled initially (will enable when needed)
+       BCLR  PWME, #%00000001       ; Ensure buzzer is disabled
 
        ; Initialize ADC (Weight Sensor on channel 5)
        MOVB  #%11000000, ATD0CTL2    ; Power up ATD
@@ -118,10 +136,15 @@ MainLoop:
        CBA                          ; Compare A (Target) with B (Current)
        BEQ   ClearTarget            ; Already at target floor
        BHI   MOVEUP                 ; Target > Current, move up
+       ; Target < Current, move down
+       ; Additional safety check: ensure Current is not already 0
+       LDAB  Current
+       BEQ   ClearTarget            ; Already at F0, clear target
        JMP   MOVEDOWN               ; else, move down
 
 ClearTarget:
        CLR   Target                 ; Clear target
+       CLR   State                  ; Clear state to allow ISR to set new target
        BRA   MainLoop
 
 OverloadWait:
@@ -271,8 +294,19 @@ DownLoop:
        LDAA  BlinkCount
        BNE   DownLoop
        
+       ; Check if we've already reached the target before decrementing
+       LDAA  Target
+       LDAB  Current
+       CBA
+       BEQ   ARRIVED              ; Already at target, don't decrement
+       
        ; Decrement the current floor
        DEC   Current
+       
+       ; Check for underflow (Current should never be < 0)
+       LDAB  Current
+       CMPB  #$FF                 ; Check if underflow occurred (DEC 0 = $FF)
+       BEQ   FixUnderflow         ; Fix underflow if it happened
        
        ; compare with requested
        LDAA  Target
@@ -280,9 +314,13 @@ DownLoop:
        CBA
        ; if equal, branch to ARRIVED
        BEQ   ARRIVED
-       ; else bra DownLoop
+       ; else continue DownLoop
        MOVB  #10, BlinkCount
        BRA   DownLoop
+       
+FixUnderflow:
+       CLR   Current              ; Fix underflow - set to 0
+       BRA   ARRIVED              ; Go to arrived since we're at F0
 
 ARRIVED:
        ; Turn off green and yellow LEDs
@@ -292,6 +330,7 @@ ARRIVED:
        BSET  PTT, #%00100000
        
        ; Buzzer beeps for 2 seconds using PWM
+       ; Enable PWM Channel 0 (buzzer) - PP0 pin
        BSET  PWME, #%00000001       ; Enable PWM Channel 0 (buzzer)
        
        LDAB  #20                    ; 20 * 100ms = 2 seconds
@@ -302,6 +341,9 @@ BuzzDelay:
        
        ; Turn OFF buzzer but keep red LED ON
        BCLR  PWME, #%00000001       ; Disable PWM Channel 0 (buzzer)
+       
+       ; Small delay to ensure PWM stops cleanly
+       JSR   DELAY
        
        ; Red LED stays ON (already set above)
        
@@ -449,27 +491,17 @@ CheckF0toF2:
 
 CheckFromF1:
        ; Check both up and down, serve closest first
-       ; Priority: If both F0 and F2 requested, serve F0 first (closer when going down)
+       ; When on F1, check F0 first (down), then F2 (up)
        LDAA  Request0
        BEQ   CheckF1Up              ; No F0 request, check F2
-       LDAB  Request2
-       BEQ   ServeF0FromF1          ; Only F0 requested, go to F0
-       ; Both F0 and F2 requested
-       ; Check current direction: if moving down or idle, serve F0 first
-       LDAB  State
-       CMPB  #2                      ; State = DOWN?
-       BEQ   ServeF0FromF1           ; Moving down, serve F0 first
-       CMPB  #0                      ; State = IDLE?
-       BEQ   ServeF0FromF1           ; Idle, serve F0 first (closer)
-       ; Moving up, serve F2 first
-       MOVB  #2, Target
-       BRA   ISR_Done
-ServeF0FromF1:
+       ; F0 is requested - always serve F0 first from F1 (it's closer)
        MOVB  #0, Target
        BRA   ISR_Done
 CheckF1Up:
+       ; No F0 request, check F2
        LDAA  Request2
        BEQ   ISR_Done               ; No requests, exit
+       ; F2 is requested
        MOVB  #2, Target
        BRA   ISR_Done
 
@@ -569,7 +601,7 @@ Exit:
 ;**********************
 ;*                 Interrupt Vectors                          *
 ;**********************
-       ORG   $FFFE
+            ORG   $FFFE
        DC.W  Entry                  ; Reset Vector
 
        ORG   $FFCA
