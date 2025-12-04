@@ -134,15 +134,15 @@ _Startup:
 ;Mainloop waits for the interrupt to update the target
 MainLoop:
        LDAA  Overload               ; Check overload flag
-       BNE   OverloadWait           ; If overloaded, wait
+       LBNE   OverloadWait           ; If overloaded, wait
 
        ; Check if elevator is already moving (State != 0)
        LDAA  State
-       BEQ   CheckTarget            ; State is IDLE, check for new target
+       LBEQ   CheckTarget            ; State is IDLE, check for new target
        CMPA  #3
-       BEQ   CheckTarget            ; State is OVERLOADED (shouldn't happen here, but check anyway)
+       LBEQ   CheckTarget            ; State is OVERLOADED (shouldn't happen here, but check anyway)
        ; State is UP (1) or DOWN (2), elevator is moving - don't interrupt
-       BRA   MainLoop               ; Wait for movement to complete
+       LBRA   MainLoop               ; Wait for movement to complete
 
 CheckTarget:
        ; Check if there's a target
@@ -152,22 +152,22 @@ CheckTarget:
        LDAA  Target
        LDAB  Current
        CBA                          ; Compare Target with Current
-       BEQ   ClearTarget            ; Already at target floor, clear target
+       LBEQ   ClearTarget            ; Already at target floor, clear target
        
        ; We have a valid target (Target != Current)
        ; Compare to determine direction
-       BHI   MOVEUP                 ; Target > Current, move up
+       LBHI   MOVEUP                 ; Target > Current, move up
        ; Target < Current, move down
        ; Additional safety check: ensure Current is not already 0
        LDAB  Current
-       BEQ   ClearTarget            ; Already at F0, clear target (shouldn't happen)
+       LBEQ   ClearTarget            ; Already at F0, clear target (shouldn't happen)
        ; Valid to move down - Target < Current and Current > 0
        JMP   MOVEDOWN               ; Move down
 
 ClearTarget:
        CLR   Target                 ; Clear target
        CLR   State                  ; Clear state to allow ISR to set new target
-       BRA   MainLoop
+       LBRA   MainLoop
 
 OverloadWait:
        ; Keep blinking red LED and beeping until weight is normal
@@ -201,7 +201,7 @@ OverloadWait:
        
        ; Check if still overloaded
        LDAA  Overload
-       BNE   OverloadWait           ; Still overloaded, continue blinking
+       LBNE   OverloadWait           ; Still overloaded, continue blinking
        
        ; Overload cleared, restore display
        LDAA  #%00000001             ; Clear LCD
@@ -212,7 +212,7 @@ OverloadWait:
        LDAA  Current
        ADDA  #'0'
        JSR   SENDDATA
-       BRA   MainLoop
+       LBRA   MainLoop
 
 MOVEUP:
        MOVB  #1, State              ; Declare moving up
@@ -247,15 +247,15 @@ MOVEUP:
 UpLoop:
        ; CRITICAL: Check target at the START of each loop iteration
        LDAA  Target
-       BEQ   UpLoopExit             ; Target cleared, exit immediately
+       LBEQ   UpLoopExit             ; Target cleared, exit immediately
        LDAB  Current
        CBA
-       BEQ   ARRIVED                ; Already at target, go to arrived immediately
+       LBEQ   ARRIVED                ; Already at target, go to arrived immediately
        
        ; Safety check: if Current is already 2 (max floor), we're at F2
        LDAB  Current
        CMPB  #2
-       BEQ   ARRIVED                ; Already at F2, go to arrived
+       LBEQ   ARRIVED                ; Already at F2, go to arrived
        
        ; Blink the Green LED continuosly 10 times
        BCLR  PTT, #%10000000
@@ -266,44 +266,44 @@ UpLoop:
        JSR   DELAY
        DEC   BlinkCount
        LDAA  BlinkCount
-       BNE   UpLoop                 ; Continue blinking if not done
+       LBNE   UpLoop                 ; Continue blinking if not done
        
        ; After blinking cycle completes, check target again BEFORE incrementing
        LDAA  Target
-       BEQ   UpLoopExit             ; Target was cleared, exit to main loop
+       LBEQ   UpLoopExit             ; Target was cleared, exit to main loop
        LDAB  Current
        CBA
-       BEQ   ARRIVED                ; Reached target during blinking, go to arrived
+       LBEQ   ARRIVED                ; Reached target during blinking, go to arrived
        
        ; Safety check: if Current is 2, we're at F2 (max floor)
        LDAB  Current
        CMPB  #2
-       BEQ   ARRIVED                ; Already at F2, go to arrived
+       LBEQ   ARRIVED                ; Already at F2, go to arrived
        
        ; Now it's safe to increment - we know Current < 2 and Current != Target
        INC   Current
        
        ; After incrementing, immediately check if we've reached the target
        LDAA  Target
-       BEQ   UpLoopExit             ; Target was cleared, exit to main loop
+       LBEQ   UpLoopExit             ; Target was cleared, exit to main loop
        LDAB  Current
        CBA
-       BEQ   ARRIVED                ; Reached target, go to arrived
+       LBEQ   ARRIVED                ; Reached target, go to arrived
        
        ; Check for overflow (should never happen, but safety check)
        LDAB  Current
        CMPB  #3                     ; Check if overflow occurred (INC 2 = 3)
-       BHI   FixOverflow            ; Fix overflow if it happened
+       LBHI   FixOverflow            ; Fix overflow if it happened
        
        ; Check if we overshot the target (Current > Target)
        LDAA  Target
        LDAB  Current
        CBA                          ; Compare Target (A) with Current (B)
-       BLO   FixOvershoot           ; Current > Target, we overshot
+       LBLO   FixOvershoot           ; Current > Target, we overshot
        
        ; Not at target yet, continue moving up
        MOVB  #10, BlinkCount
-       BRA   UpLoop
+       LBRA   UpLoop
        
 UpLoopExit:
        ; Target was cleared, return to main loop to get new target
@@ -312,12 +312,12 @@ UpLoopExit:
        
 FixOverflow:
        MOVB  #2, Current            ; Fix overflow - set to 2 (max floor)
-       BRA   ARRIVED                ; Go to arrived since we're at F2
+       LBRA   ARRIVED                ; Go to arrived since we're at F2
        
 FixOvershoot:
        ; We overshot - this shouldn't happen, but if it does, go to arrived
        ; The target should have been reached before this point
-       BRA   ARRIVED
+       LBRA   ARRIVED
 
 MOVEDOWN:
        MOVB  #2, State              ; Declare moving down
@@ -360,13 +360,13 @@ DownLoop:
        LDAA  Target
        LDAB  Current
        CBA                          ; Compare Target (A) with Current (B)
-       BEQ   ARRIVED              ; Already at target, go to arrived immediately
+       LBEQ   ARRIVED              ; Already at target, go to arrived immediately
        
        ; Safety check: if Current is already 0, we're at F0
        ; If Target is also 0, we've arrived (handled above)
        ; If Target is not 0 but Current is 0, something is wrong - go to arrived anyway
        LDAB  Current
-       BEQ   ARRIVED              ; Already at F0, go to arrived
+       LBEQ   ARRIVED              ; Already at F0, go to arrived
        
        ; Check if Target was cleared (Target = 0 AND we're not trying to go to F0)
        ; Since we're in DownLoop, if Target = 0, it means we want to go to F0
@@ -374,7 +374,7 @@ DownLoop:
        ; However, if State is cleared, that means we should exit
        LDAA  State
        CMPA  #2                     ; Check if State is still DOWN (2)
-       BNE   DownLoopExit         ; State changed, exit to main loop
+       LBNE   DownLoopExit         ; State changed, exit to main loop
        
        ; Blink the Yellow LED continuosly 10 times
        BCLR  PTT, #%01000000
@@ -385,22 +385,22 @@ DownLoop:
        JSR   DELAY
        DEC   BlinkCount
        LDAA  BlinkCount
-       BNE   DownLoop             ; Continue blinking if not done
+       LBNE   DownLoop             ; Continue blinking if not done
        
        ; After blinking cycle completes, check target again BEFORE decrementing
        LDAA  Target
        LDAB  Current
        CBA                          ; Compare Target with Current
-       BEQ   ARRIVED              ; Reached target during blinking, go to arrived
+       LBEQ   ARRIVED              ; Reached target during blinking, go to arrived
        
        ; Check if State was cleared (shouldn't happen, but safety check)
        LDAA  State
        CMPA  #2                     ; Check if State is still DOWN (2)
-       BNE   DownLoopExit         ; State changed, exit to main loop
+       LBNE   DownLoopExit         ; State changed, exit to main loop
        
        ; Safety check: if Current is 0, we're at F0
        LDAB  Current
-       BEQ   ARRIVED              ; Already at F0, go to arrived
+       LBEQ   ARRIVED              ; Already at F0, go to arrived
        
        ; Now it's safe to decrement - we know Current > 0 and Current != Target
        DEC   Current
@@ -409,22 +409,22 @@ DownLoop:
        LDAA  Target
        LDAB  Current
        CBA                          ; Compare Target (A) with Current (B)
-       BEQ   ARRIVED              ; Reached target, go to arrived
+       LBEQ   ARRIVED              ; Reached target, go to arrived
        
        ; Check for underflow (should never happen, but safety check)
        LDAB  Current
        CMPB  #$FF                 ; Check if underflow occurred (DEC 0 = $FF)
-       BEQ   FixUnderflow         ; Fix underflow if it happened
+       LBEQ   FixUnderflow         ; Fix underflow if it happened
        
        ; Check if we undershot the target (Current < Target)
        LDAA  Target
        LDAB  Current
        CBA                          ; Compare Target (A) with Current (B)
-       BHI   FixUndershoot         ; Current < Target, we undershot
+       LBHI   FixUndershoot         ; Current < Target, we undershot
        
        ; Not at target yet, continue moving down
        MOVB  #10, BlinkCount
-       BRA   DownLoop
+       LBRA   DownLoop
        
 DownLoopExit:
        ; Target was cleared, return to main loop to get new target
@@ -433,12 +433,12 @@ DownLoopExit:
        
 FixUnderflow:
        CLR   Current              ; Fix underflow - set to 0
-       BRA   ARRIVED              ; Go to arrived since we're at F0
+       LBRA   ARRIVED              ; Go to arrived since we're at F0
        
 FixUndershoot:
        ; We undershot - this shouldn't happen, but if it does, go to arrived
        ; The target should have been reached before this point
-       BRA   ARRIVED
+       LBRA   ARRIVED
 
 ARRIVED:
        ; Turn off green and yellow LEDs
@@ -460,7 +460,7 @@ ARRIVED:
 BuzzDelay:
        JSR   DELAY                  ; 100ms delay
        DECB
-       BNE   BuzzDelay
+       LBNE   BuzzDelay
        
        ; Turn OFF buzzer but keep red LED ON
        BCLR  PWME, #%00000001       ; Disable PWM Channel 0 (buzzer)
@@ -482,14 +482,14 @@ BuzzDelay:
        JSR   SENDDATA
        
        LDAA  Current
-       BEQ   ClearReq0
+       LBEQ   ClearReq0
        CMPA  #1
-       BEQ   ClearReq1
+       LBEQ   ClearReq1
        CLR   Request2
-       BRA   ArrDone
+       LBRA   ArrDone
 ClearReq0:
        CLR   Request0
-       BRA   ArrDone
+       LBRA   ArrDone
 ClearReq1:
        CLR   Request1
 ArrDone:
@@ -501,7 +501,7 @@ ArrDone:
 ArrWait:
        JSR   DELAY
        DECB
-       BNE   ArrWait
+       LBNE   ArrWait
        
        BCLR  PTT, #%00100000        ; Turn OFF red LED (door closed)
        
@@ -524,7 +524,7 @@ WaitADC:
        STAA  ADCValue
 
        CMPA  #125                   ; Check threshold
-       BLS   WeightOK               ; Weight <= 125, OK
+       LBLS   WeightOK               ; Weight <= 125, OK
 
        ; Overload detected
        MOVB  #1, Overload           ; Set overload flag
@@ -537,7 +537,7 @@ WeightOK:
        CLR   Overload               ; Clear overload flag (removes overload when pot drops)
        LDAA  State
        CMPA  #3                     ; Check if was in overload state
-       BNE   NotRecovering
+       LBNE   NotRecovering
        
        ; Recovering from overload, turn off red LED and buzzer
        BCLR  PTT, #%00100000        ; Turn OFF red LED
@@ -551,47 +551,85 @@ NotRecovering:
        PSHB                          ; Save B register
        TAB                           ; Copy inverted PORTA to B for processing
        ANDA  #%11111100             ; Mask out lower 2 bits (unused) - check if any button pressed
-       BEQ   NoButtonsPop           ; No buttons pressed, restore and exit
+       LBEQ   ClearAllRequests       ; No buttons pressed, clear all request flags
 
        ; Check each button and set request flags using the stored inverted value in B
        ; PB2 (bit 2) -> Request0 (F0 button)
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%00000100
-       BEQ   CheckPB3
+       LBEQ   CheckPB3
        MOVB  #1, Request0
+       LBRA   CheckPB3                ; Set Request0, continue checking other buttons
 CheckPB3:
        ; PB3 (bit 3) -> Request1 (F1 button)
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%00001000
-       BEQ   CheckPB4
+       LBEQ   CheckPB4
        MOVB  #1, Request1
+       LBRA   CheckPB4                ; Set Request1, continue checking other buttons
 CheckPB4:
        ; PB4 (bit 4) -> Request2 (F2 button)
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%00010000
-       BEQ   CheckPB5
+       LBEQ   CheckPB5
        MOVB  #1, Request2
+       LBRA   CheckPB5                ; Set Request2, continue checking other buttons
 CheckPB5:
        ; PB5 (bit 5) -> Request0 (F0 button from inside)
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%00100000
-       BEQ   CheckPB6
+       LBEQ   CheckPB6
        MOVB  #1, Request0
+       LBRA   CheckPB6                ; Set Request0, continue checking other buttons
 CheckPB6:
        ; PB6 (bit 6) -> Request1 (F1 button from inside)
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%01000000
-       BEQ   CheckPB7
+       LBEQ   CheckPB7
        MOVB  #1, Request1
+       LBRA   CheckPB7                ; Set Request1, continue checking other buttons
 CheckPB7:
        ; PB7 (bit 7) -> Request2 (F2 button from inside)
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%10000000
-       BEQ   NoButtonsPop
+       LBEQ   ButtonsProcessed
        MOVB  #1, Request2
-NoButtonsPop:
+       LBRA   ButtonsProcessed        ; Set Request2, done processing buttons
+       
+ButtonsProcessed:
        PULB                          ; Restore B register
-       BRA   NoButtons
+       LBRA   NoButtons
+
+ClearAllRequests:
+       ; No buttons are pressed
+       ; If elevator is idle and at target, clear request for current floor
+       ; (This prevents stale requests from causing unwanted movement)
+       LDAA  State
+       LBNE   ButtonsProcessedPop    ; Moving, don't clear requests
+       
+       ; Elevator is idle, check if we're at target
+       LDAA  Target
+       LDAB  Current
+       CBA                          ; Compare Target with Current
+       LBNE   ButtonsProcessedPop    ; Not at target, don't clear requests
+       
+       ; At target and idle - clear request for current floor
+       ; This prevents the elevator from moving to the same floor again
+       LDAA  Current
+       LBEQ   ClearReq0AtF0
+       CMPA  #1
+       LBEQ   ClearReq1AtF1
+       ; At F2
+       CLR   Request2
+       LBRA   ButtonsProcessedPop
+ClearReq0AtF0:
+       CLR   Request0
+       LBRA   ButtonsProcessedPop
+ClearReq1AtF1:
+       CLR   Request1
+ButtonsProcessedPop:
+       PULB                          ; Restore B register
+       LBRA   NoButtons
 
 NoButtons:
        ; REMEMBER YA RAWAD W REEM: Priority: serve closest floor first
@@ -599,7 +637,7 @@ NoButtons:
        ; We can't check Target == 0 because 0 is a valid floor (F0)
        ; Instead, check if State is IDLE (0)
        LDAA  State
-       BNE   ISR_Done               ; Elevator is moving, don't change target
+       LBNE   ISR_Done               ; Elevator is moving, don't change target
        
        ; Elevator is idle, check if we need to set a target
        ; If Target is already set (even if 0 for F0), we should check if Current == Target
@@ -607,62 +645,115 @@ NoButtons:
        LDAA  Target
        LDAB  Current
        CBA                          ; Compare Target with Current
-       BNE   ISR_Done               ; Target != Current, elevator has a pending target
+       LBNE   ISR_Done               ; Target != Current, elevator has a pending target
        
        ; Target == Current (elevator is idle at target floor), can set new target
-       ; Check which floor we're on and find next request
+       ; BUT: Only set target if there are actual pending requests
+       ; Check if any request flags are set
+       LDAA  Request0
+       LBEQ   CheckReq1
+       ; Request0 is set - check if we're not already at F0
+       LDAB  Current
+       LBNE   HasRequest             ; Not at F0, has valid request
+       ; At F0 and Request0 is set - this should have been cleared, but clear it now
+       CLR   Request0
+       LBRA   CheckReq1
+HasRequest:
+       ; We have at least one request, proceed to set target based on current floor
        LDAA  Current
-       BEQ   CheckFromF0
+       LBEQ   CheckFromF0
        CMPA  #1
-       BEQ   CheckFromF1
-       BRA   CheckFromF2
+       LBEQ   CheckFromF1
+       LBRA   CheckFromF2
+       
+CheckReq1:
+       LDAA  Request1
+       LBEQ   CheckReq2
+       ; Request1 is set - check if we're not already at F1
+       LDAB  Current
+       CMPB  #1
+       LBNE   HasRequest             ; Not at F1, has valid request
+       ; At F1 and Request1 is set - this should have been cleared, but clear it now
+       CLR   Request1
+       LBRA   CheckReq2
+       
+CheckReq2:
+       LDAA  Request2
+       LBEQ   ISR_Done               ; No requests at all, exit
+       ; Request2 is set - check if we're not already at F2
+       LDAB  Current
+       CMPB  #2
+       LBNE   HasRequest             ; Not at F2, has valid request
+       ; At F2 and Request2 is set - this should have been cleared, but clear it now
+       CLR   Request2
+       LBRA   ISR_Done
 
 CheckFromF0:
        LDAA  Request1
-       BEQ   CheckF0toF2
+       LBEQ   CheckF0toF2
+       ; F1 is requested - verify we're not already at F1 (safety check)
+       LDAB  Current
+       CMPB  #1
+       LBEQ   ISR_Done               ; Already at F1, don't set target
        MOVB  #1, Target
-       BRA   ISR_Done
+       LBRA   ISR_Done
 CheckF0toF2:
        LDAA  Request2
-       BEQ   ISR_Done
+       LBEQ   ISR_Done
+       ; F2 is requested - verify we're not already at F2 (safety check)
+       LDAB  Current
+       CMPB  #2
+       LBEQ   ISR_Done               ; Already at F2, don't set target
        MOVB  #2, Target
-       BRA   ISR_Done
+       LBRA   ISR_Done
 
 CheckFromF1:
        ; Check both up and down, serve closest first
        ; When on F1, check F0 first (down), then F2 (up)
        LDAA  Request0
-       BEQ   CheckF1Up              ; No F0 request, check F2
-       ; F0 is requested - always serve F0 first from F1 (it's closer)
+       LBEQ   CheckF1Up              ; No F0 request, check F2
+       ; F0 is requested - verify we're not already at F0 (safety check)
+       LDAB  Current
+       CMPB  #0
+       LBEQ   ISR_Done               ; Already at F0, don't set target
+       ; F0 is requested and we're at F1 - always serve F0 first from F1 (it's closer)
        MOVB  #0, Target
-       BRA   ISR_Done
+       LBRA   ISR_Done
 CheckF1Up:
        ; No F0 request, check F2
        LDAA  Request2
-       BEQ   ISR_Done               ; No requests, exit
+       LBEQ   ISR_Done               ; No requests, exit
        ; F2 is requested
        MOVB  #2, Target
-       BRA   ISR_Done
+       LBRA   ISR_Done
 
 CheckFromF2:
        ; When on F2, check requests in descending order: F1, then F0
        LDAA  Request1
-       BEQ   CheckF2toF0            ; No F1 request, check F0
+       LBEQ   CheckF2toF0            ; No F1 request, check F0
+       ; F1 is requested - verify we're not already at F1 (safety check)
+       LDAB  Current
+       CMPB  #1
+       LBEQ   CheckF2toF0            ; Already at F1, check F0 instead
        ; F1 is requested, go to F1 first (will handle F0 after if needed)
        MOVB  #1, Target
-       BRA   ISR_Done
+       LBRA   ISR_Done
 CheckF2toF0:
        ; No F1 request, check F0
        LDAA  Request0
-       BEQ   ISR_Done               ; No F0 request either, exit
+       LBEQ   ISR_Done               ; No F0 request either, exit
+       ; F0 is requested - verify we're not already at F0 (safety check)
+       LDAB  Current
+       CMPB  #0
+       LBEQ   ISR_Done               ; Already at F0, don't set target
        ; F0 is requested, go directly to F0
        MOVB  #0, Target
-       BRA   ISR_Done
+       LBRA   ISR_Done
 
 ISR_Done:
        RTI                          ; Return from interrupt
 
-       BRA   Exit
+       LBRA   Exit
 
 
 ;Subroutines
@@ -725,14 +816,14 @@ again:
        PSHB
        PULB
        DEX
-       BNE   again
+       LBNE   again
        RTS
 
 DelayADC:
        LDX   #5000                  ; Delay for ADC power-up
 DelayLoop:
        DEX
-       BNE   DelayLoop
+       LBNE   DelayLoop
        RTS
 
 Exit:
