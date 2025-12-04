@@ -145,18 +145,22 @@ MainLoop:
        BRA   MainLoop               ; Wait for movement to complete
 
 CheckTarget:
-       LDAA  Target                 ; Check if there's a target
-       BEQ   MainLoop               ; No target, keep waiting
-
-       ; Compare current floor with target
+       ; Check if there's a target
+       ; Since Target can be 0 (F0), we can't use BEQ to check for "no target"
+       ; Instead, check if State is IDLE - if State is IDLE and we're here, Target was set by ISR
+       ; OR check if Current != Target (if they're equal, we're already there)
+       LDAA  Target
        LDAB  Current
-       CBA                          ; Compare A (Target) with B (Current)
-       BEQ   ClearTarget            ; Already at target floor
+       CBA                          ; Compare Target with Current
+       BEQ   ClearTarget            ; Already at target floor, clear target
+       
+       ; We have a valid target (Target != Current)
+       ; Compare to determine direction
        BHI   MOVEUP                 ; Target > Current, move up
        ; Target < Current, move down
        ; Additional safety check: ensure Current is not already 0
        LDAB  Current
-       BEQ   ClearTarget            ; Already at F0, clear target
+       BEQ   ClearTarget            ; Already at F0, clear target (shouldn't happen)
        ; Valid to move down - Target < Current and Current > 0
        JMP   MOVEDOWN               ; Move down
 
@@ -351,17 +355,26 @@ MOVEDOWN:
        MOVB  #10, BlinkCount
 
 DownLoop:
-       ; CRITICAL: Check target at the START of each loop iteration
-       ; This prevents freeze when Target gets cleared or changed
+       ; CRITICAL: Check if we've reached the target FIRST
+       ; Compare Current with Target - if equal, we've arrived
        LDAA  Target
-       BEQ   DownLoopExit         ; Target cleared, exit immediately
        LDAB  Current
-       CBA
+       CBA                          ; Compare Target (A) with Current (B)
        BEQ   ARRIVED              ; Already at target, go to arrived immediately
        
        ; Safety check: if Current is already 0, we're at F0
+       ; If Target is also 0, we've arrived (handled above)
+       ; If Target is not 0 but Current is 0, something is wrong - go to arrived anyway
        LDAB  Current
        BEQ   ARRIVED              ; Already at F0, go to arrived
+       
+       ; Check if Target was cleared (Target = 0 AND we're not trying to go to F0)
+       ; Since we're in DownLoop, if Target = 0, it means we want to go to F0
+       ; So we should continue, not exit
+       ; However, if State is cleared, that means we should exit
+       LDAA  State
+       CMPA  #2                     ; Check if State is still DOWN (2)
+       BNE   DownLoopExit         ; State changed, exit to main loop
        
        ; Blink the Yellow LED continuosly 10 times
        BCLR  PTT, #%01000000
@@ -376,10 +389,14 @@ DownLoop:
        
        ; After blinking cycle completes, check target again BEFORE decrementing
        LDAA  Target
-       BEQ   DownLoopExit         ; Target was cleared, exit to main loop
        LDAB  Current
-       CBA
+       CBA                          ; Compare Target with Current
        BEQ   ARRIVED              ; Reached target during blinking, go to arrived
+       
+       ; Check if State was cleared (shouldn't happen, but safety check)
+       LDAA  State
+       CMPA  #2                     ; Check if State is still DOWN (2)
+       BNE   DownLoopExit         ; State changed, exit to main loop
        
        ; Safety check: if Current is 0, we're at F0
        LDAB  Current
@@ -390,9 +407,8 @@ DownLoop:
        
        ; After decrementing, immediately check if we've reached the target
        LDAA  Target
-       BEQ   DownLoopExit         ; Target was cleared, exit to main loop
        LDAB  Current
-       CBA
+       CBA                          ; Compare Target (A) with Current (B)
        BEQ   ARRIVED              ; Reached target, go to arrived
        
        ; Check for underflow (should never happen, but safety check)
@@ -579,10 +595,21 @@ NoButtonsPop:
 
 NoButtons:
        ; REMEMBER YA RAWAD W REEM: Priority: serve closest floor first
-       ; Only set new Target if no current Target (elevator is idle or just arrived)
-       LDAA  Target
-       BNE   ISR_Done               ; Already has a target, don't change it
+       ; Only set new Target if elevator is idle (State = 0)
+       ; We can't check Target == 0 because 0 is a valid floor (F0)
+       ; Instead, check if State is IDLE (0)
+       LDAA  State
+       BNE   ISR_Done               ; Elevator is moving, don't change target
        
+       ; Elevator is idle, check if we need to set a target
+       ; If Target is already set (even if 0 for F0), we should check if Current == Target
+       ; If Current == Target, we can set a new target
+       LDAA  Target
+       LDAB  Current
+       CBA                          ; Compare Target with Current
+       BNE   ISR_Done               ; Target != Current, elevator has a pending target
+       
+       ; Target == Current (elevator is idle at target floor), can set new target
        ; Check which floor we're on and find next request
        LDAA  Current
        BEQ   CheckFromF0
