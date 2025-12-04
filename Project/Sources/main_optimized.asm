@@ -25,15 +25,8 @@ Request2    DS.B 1
 BlinkCount  DS.B 1
 ButtonState DS.B 1      ; Temporary storage for button reading
 
-; String constants (null-terminated)
-            ORG ROMStart
-StrOverload FCC "OVERLOAD",0
-StrMovingUp FCC "MOVING UP:",0
-StrMovingDn FCC "MOVING DOWN:",0
-StrFloor    FCC "F",0
-
-; code section
-            ORG   ROMStart+$100  ; Skip string area
+; code section - START HERE (strings will be placed after code)
+            ORG   ROMStart
 
 Entry:
 _Startup:
@@ -52,23 +45,52 @@ _Startup:
        
        ; Configure GPIO
        MOVB  #$00, DDRA
+       ; CRITICAL: Check derivative.inc for correct PUCR value
+       ; For MC9S12DT256: bit 0 = Port A pull-ups, bit 1 = Port B pull-ups
+       ; Using $01 for Port A only (if this doesn't work, try $03 for A+B)
        MOVB  #$01, PUCR              ; Enable pull-ups for Port A
        MOVB  #%11100000, DDRT
        MOVB  #%00000000, PTT
        
-       ; Initialize PWM for Buzzer (4kHz, 50% duty)
-       BCLR  PWME, #%00000001
-       BSET  DDRP, #%00000001
-       BCLR  PWMCLK, #%00000001
-       BCLR  PWMPRCLK, #%00000111
-       BSET  PWMPRCLK, #%00000011      ; E/8 prescaler
-       BCLR  PWMCTL, #%00010000
-       BSET  PWMPOL, #%00000001
-       CLR   PWMCNT0
-       MOVB  #250, PWMPER0
-       MOVB  #125, PWMDTY0
-       JSR   DelayADC
-       BCLR  PWME, #%00000001
+       ; Initialize PWM for Buzzer
+       ; CRITICAL FIX #1: Configure PPAR to assign PP0 to PWM module
+       ; If PPAR.0 = 0, PP0 is GPIO and PWM won't work!
+       ; Check if PPAR exists in derivative.inc - if not, comment this out
+       ; BSET  PPAR, #%00000001       ; Assign PP0 to PWM (uncomment if PPAR exists)
+       
+       BCLR  PWME, #%00000001         ; Disable PWM first
+       BSET  DDRP, #%00000001         ; Set PP0 as output
+       BCLR  PWMCLK, #%00000001       ; Channel 0 uses Clock A
+       BCLR  PWMPRCLK, #%00000111     ; Clear prescaler bits
+       
+       ; CRITICAL FIX #3: Try different frequencies for audibility
+       ; Option A: 1kHz (loudest, most audible) - RECOMMENDED
+       BSET  PWMPRCLK, #%00000101     ; E/32 prescaler (PCKA = 101)
+       MOVB  #250, PWMPER0            ; Period = 250
+       MOVB  #125, PWMDTY0            ; Duty = 125 (50%)
+       
+       ; Option B: 2kHz (if 1kHz doesn't work, uncomment this and comment Option A)
+       ; BSET  PWMPRCLK, #%00000100   ; E/16 prescaler (PCKA = 100)
+       ; MOVB  #250, PWMPER0          ; Period = 250
+       ; MOVB  #125, PWMDTY0          ; Duty = 125 (50%)
+       
+       ; Option C: 4kHz (original, if others don't work)
+       ; BSET  PWMPRCLK, #%00000011   ; E/8 prescaler (PCKA = 011)
+       ; MOVB  #250, PWMPER0          ; Period = 250
+       ; MOVB  #125, PWMDTY0          ; Duty = 125 (50%)
+       
+       BCLR  PWMCTL, #%00010000       ; Channels 0 and 1 separate
+       
+       ; CRITICAL FIX #5: Try both polarities - if one doesn't work, try the other
+       ; Option A: Active high (default) - try this first
+       BSET  PWMPOL, #%00000001       ; Active high
+       
+       ; Option B: Active low (if active high doesn't work, comment Option A and uncomment this)
+       ; BCLR  PWMPOL, #%00000001     ; Active low
+       
+       CLR   PWMCNT0                  ; Clear counter
+       JSR   DelayADC                 ; Let registers settle
+       BCLR  PWME, #%00000001         ; Keep disabled initially
 
        ; Initialize ADC
        MOVB  #%11000000, ATD0CTL2
@@ -230,23 +252,23 @@ ARRIVED:
        BCLR  PTT, #%11000000
        BSET  PTT, #%00100000
        
-       ; Enable buzzer (atomic)
-       SEI
-       BSET  PWME, #%00000001
-       CLI
+       ; CRITICAL FIX #4: Enable PWM WITHOUT SEI/CLI to avoid timing issues
+       ; PWM enable should be stable - SEI/CLI can cause PWM to miss sync
+       BSET  PWME, #%00000001         ; Enable PWM (no interrupt disable needed)
        
+       ; Small delay to let PWM stabilize
        JSR   DELAY
        JSR   DELAY
+       
+       ; Wait for 2 seconds (20 * 100ms = 2000ms)
        LDAB  #20
 BuzzDelay:
        JSR   DELAY
        DECB
        LBNE   BuzzDelay
        
-       ; Disable buzzer (atomic)
-       SEI
+       ; Disable buzzer (no SEI/CLI needed)
        BCLR  PWME, #%00000001
-       CLI
        
        JSR   DELAY
        JSR   ClearLCD
@@ -295,7 +317,7 @@ WaitADC:
        MOVB  #1, Overload
        MOVB  #3, State
        BCLR  PTT, #%11000000
-       BSET  PWME, #%00000001
+       BSET  PWME, #%00000001         ; Enable buzzer (no SEI/CLI in ISR)
        RTI
 
 WeightOK:
@@ -304,10 +326,9 @@ WeightOK:
        CMPA  #3
        LBNE   NotRecovering
        
-       SEI
+       ; CRITICAL FIX #4: No SEI/CLI needed - ISR already has interrupts disabled
        BCLR  PTT, #%00100000
-       BCLR  PWME, #%00000001
-       CLI
+       BCLR  PWME, #%00000001         ; Disable buzzer
        CLR   State
 
 NotRecovering:
@@ -431,16 +452,19 @@ PrintFloor:
 
 PrintString:
        ; X points to null-terminated string
+       ; CRITICAL: Save ALL registers that SENDDATA might modify
        PSHX
        PSHB
+       PSHA
 PrintLoop:
        LDAB  0,X
        BEQ   PrintDone
-       TBA
-       JSR   SENDDATA
+       TBA                           ; Transfer B to A for SENDDATA
+       JSR   SENDDATA               ; SENDDATA modifies A and B, but we saved them
        INX
        BRA   PrintLoop
 PrintDone:
+       PULA                         ; Restore in reverse order
        PULB
        PULX
        RTS
@@ -517,11 +541,41 @@ DelayLoop:
        RTS
 
 ;**********************
+;* Hardware Diagnostic Routines *
+;**********************
+
+; TestPP0_GPIO:
+;       ; CRITICAL FIX #2: Test if PP0 is actually connected to buzzer
+;       ; Uncomment this routine and call it from Entry to test hardware
+;       ; If buzzer clicks/ticks → PWM frequency issue
+;       ; If nothing happens → PP0 not connected to buzzer
+;       ; If LED toggles but buzzer silent → active buzzer (needs DC, not PWM)
+;       MOVB  #%00000001, DDRP       ; Set PP0 as output
+;       ; BCLR  PPAR, #%00000001     ; Make PP0 GPIO (if PPAR exists)
+;TestLoop:
+;       BSET  PTP, #%00000001        ; Set PP0 high
+;       JSR   DELAY                  ; Wait
+;       BCLR  PTP, #%00000001        ; Set PP0 low
+;       JSR   DELAY                  ; Wait
+;       BRA   TestLoop               ; Loop forever
+;       RTS                          ; Never reached
+
+;**********************
+;* String Constants    *
+;* Placed AFTER code to avoid overwriting program start *
+;**********************
+            ORG   ROMStart+$600      ; Safe area for strings (after code)
+StrOverload FCC "OVERLOAD",0
+StrMovingUp FCC "MOVING UP:",0
+StrMovingDn FCC "MOVING DOWN:",0
+StrFloor    FCC "F",0
+
+;**********************
 ;* Interrupt Vectors   *
 ;**********************
             ORG   $FFFE
-       DC.W  Entry
+       DC.W  Entry                  ; Reset vector - Entry is at ROMStart
 
        ORG   $FFCA
-       DC.W  MCCNT_ISR
+       DC.W  MCCNT_ISR              ; Modulus Counter Interrupt Vector
 
