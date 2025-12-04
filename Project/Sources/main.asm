@@ -29,6 +29,7 @@ Request0    DS.B 1
 Request1    DS.B 1
 Request2    DS.B 1
 BlinkCount  DS.B 1
+ButtonState DS.B 1      ; Temporary storage for button reading (diagnostic)
 
 ; code section
             ORG   ROMStart
@@ -50,12 +51,12 @@ _Startup:
        
        MOVB  #$00, DDRA             ; PORTA all inputs
        ; CRITICAL FIX: Enable pull-ups on PA2-PA7 to prevent floating inputs
-       ; PA2-PA7 are button inputs - they need pull-ups to prevent false readings
-       ; PUCR bit 0 = enable pull-ups for Port A (NOT bit 1!)
-       ; PUCR bit 1 = enable pull-ups for Port B
-       ; On MC9S12DT256: PUCR bit 0 enables pull-ups for entire Port A
-       ; This prevents floating pins from reading as "pressed" buttons
-       MOVB  #$01, PUCR              ; Enable pull-ups for Port A (bit 0 = 1)
+       ; On LAU HC12 LAB BOARD: Port A pull-ups are controlled by PUPCRA, NOT PUCR!
+       ; PUCR is global but board routing disables it on this specific board
+       ; PUPCRA controls pull-ups for Port A pins individually
+       MOVB  #$FF, PUPCRA           ; Enable pull-ups on ALL Port A pins (board-specific fix)
+       ; Remove old PUCR setting - it doesn't work on this board
+       ; MOVB  #$01, PUCR            ; OLD - doesn't work on LAU board
        MOVB  #%11100000, DDRT       ; PORTT: PT7, PT6, PT5 as outputs (LEDs)
        MOVB  #%00000000, PTT        ; Initialize PORTT (all LEDs off)
        
@@ -583,8 +584,21 @@ NotRecovering:
        COMA                         ; Invert (buttons are active low)
        PSHB                          ; Save B register
        TAB                           ; Copy inverted PORTA to B for processing
+       STAB  ButtonState             ; Store for diagnostic
        
+       ; DIAGNOSTIC TEST: Check if PA2 (F0 internal) is stuck
+       ; If green LED turns ON → PA2 is stuck LOW (after COMA becomes HIGH)
+       LDAA  ButtonState
+       ANDA  #%00000100             ; Check PA2 (internal F0 button)
+       BEQ   NotF0Stuck             ; PA2 not stuck, continue
+       ; PA2 seems stuck - turn on green LED for diagnostic
+       BSET  PTT, #%10000000        ; Turn ON green LED (diagnostic)
+       BRA   ContinueButtonCheck
+NotF0Stuck:
+       ; Green LED controlled by movement code, don't interfere here
+ContinueButtonCheck:
        ; Check if ANY button is pressed (PA2-PA7, bits 2-7)
+       TBA                          ; Get button state from B
        ANDA  #%11111100             ; Mask out lower 2 bits (PA0-PA1 unused)
        LBEQ   NoButtonsProcessed    ; No buttons pressed, keep existing requests (don't clear!)
 
