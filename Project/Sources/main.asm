@@ -136,6 +136,15 @@ MainLoop:
        LDAA  Overload               ; Check overload flag
        BNE   OverloadWait           ; If overloaded, wait
 
+       ; Check if elevator is already moving (State != 0)
+       LDAA  State
+       BEQ   CheckTarget            ; State is IDLE, check for new target
+       CMPA  #3
+       BEQ   CheckTarget            ; State is OVERLOADED (shouldn't happen here, but check anyway)
+       ; State is UP (1) or DOWN (2), elevator is moving - don't interrupt
+       BRA   MainLoop               ; Wait for movement to complete
+
+CheckTarget:
        LDAA  Target                 ; Check if there's a target
        BEQ   MainLoop               ; No target, keep waiting
 
@@ -232,6 +241,18 @@ MOVEUP:
        MOVB  #10, BlinkCount
 
 UpLoop:
+       ; CRITICAL: Check target at the START of each loop iteration
+       LDAA  Target
+       BEQ   UpLoopExit             ; Target cleared, exit immediately
+       LDAB  Current
+       CBA
+       BEQ   ARRIVED                ; Already at target, go to arrived immediately
+       
+       ; Safety check: if Current is already 2 (max floor), we're at F2
+       LDAB  Current
+       CMPB  #2
+       BEQ   ARRIVED                ; Already at F2, go to arrived
+       
        ; Blink the Green LED continuosly 10 times
        BCLR  PTT, #%10000000
        JSR   DELAY
@@ -241,23 +262,61 @@ UpLoop:
        JSR   DELAY
        DEC   BlinkCount
        LDAA  BlinkCount
-       BNE   UpLoop
+       BNE   UpLoop                 ; Continue blinking if not done
        
-       ; Increment the current floor
-       INC   Current
-       
-       ; compare with requested
+       ; After blinking cycle completes, check target again BEFORE incrementing
        LDAA  Target
+       BEQ   UpLoopExit             ; Target was cleared, exit to main loop
        LDAB  Current
        CBA
-       ; if equal, branch to ARRIVED
-       LBEQ   ARRIVED
-       ; else bra UpLoop
+       BEQ   ARRIVED                ; Reached target during blinking, go to arrived
+       
+       ; Safety check: if Current is 2, we're at F2 (max floor)
+       LDAB  Current
+       CMPB  #2
+       BEQ   ARRIVED                ; Already at F2, go to arrived
+       
+       ; Now it's safe to increment - we know Current < 2 and Current != Target
+       INC   Current
+       
+       ; After incrementing, immediately check if we've reached the target
+       LDAA  Target
+       BEQ   UpLoopExit             ; Target was cleared, exit to main loop
+       LDAB  Current
+       CBA
+       BEQ   ARRIVED                ; Reached target, go to arrived
+       
+       ; Check for overflow (should never happen, but safety check)
+       LDAB  Current
+       CMPB  #3                     ; Check if overflow occurred (INC 2 = 3)
+       BHI   FixOverflow            ; Fix overflow if it happened
+       
+       ; Check if we overshot the target (Current > Target)
+       LDAA  Target
+       LDAB  Current
+       CBA                          ; Compare Target (A) with Current (B)
+       BLO   FixOvershoot           ; Current > Target, we overshot
+       
+       ; Not at target yet, continue moving up
        MOVB  #10, BlinkCount
        BRA   UpLoop
+       
+UpLoopExit:
+       ; Target was cleared, return to main loop to get new target
+       CLR   State
+       JMP   MainLoop
+       
+FixOverflow:
+       MOVB  #2, Current            ; Fix overflow - set to 2 (max floor)
+       BRA   ARRIVED                ; Go to arrived since we're at F2
+       
+FixOvershoot:
+       ; We overshot - this shouldn't happen, but if it does, go to arrived
+       ; The target should have been reached before this point
+       BRA   ARRIVED
 
 MOVEDOWN:
-       MOVB  #2, State              ; Declare moving up
+       MOVB  #2, State              ; Declare moving down
 
        LDAA  #%00000001             ;Clear LCD
        JSR   SENDINST
@@ -341,6 +400,12 @@ DownLoop:
        CMPB  #$FF                 ; Check if underflow occurred (DEC 0 = $FF)
        BEQ   FixUnderflow         ; Fix underflow if it happened
        
+       ; Check if we undershot the target (Current < Target)
+       LDAA  Target
+       LDAB  Current
+       CBA                          ; Compare Target (A) with Current (B)
+       BHI   FixUndershoot         ; Current < Target, we undershot
+       
        ; Not at target yet, continue moving down
        MOVB  #10, BlinkCount
        BRA   DownLoop
@@ -353,6 +418,11 @@ DownLoopExit:
 FixUnderflow:
        CLR   Current              ; Fix underflow - set to 0
        BRA   ARRIVED              ; Go to arrived since we're at F0
+       
+FixUndershoot:
+       ; We undershot - this shouldn't happen, but if it does, go to arrived
+       ; The target should have been reached before this point
+       BRA   ARRIVED
 
 ARRIVED:
        ; Turn off green and yellow LEDs
@@ -459,48 +529,53 @@ WeightOK:
        CLR   State                  ; Reset state to IDLE
        
 NotRecovering:
-       ; Read all buttons and do what is needed
+       ; Read all buttons ONCE and process efficiently
        LDAA  PORTA
-       COMA
-       ANDA  #%11111100
-       BEQ   NoButtons              ; No buttons pressed
+       COMA                         ; Invert (buttons are active low)
+       PSHB                          ; Save B register
+       TAB                           ; Copy inverted PORTA to B for processing
+       ANDA  #%11111100             ; Mask out lower 2 bits (unused) - check if any button pressed
+       BEQ   NoButtonsPop           ; No buttons pressed, restore and exit
 
-       ; Check each button and set Target accordingly
-       LDAA  PORTA
-       COMA
+       ; Check each button and set request flags using the stored inverted value in B
+       ; PB2 (bit 2) -> Request0 (F0 button)
+       TBA                           ; Get inverted PORTA value from B
        ANDA  #%00000100
-       BEQ   CheckPB4
+       BEQ   CheckPB3
        MOVB  #1, Request0
-CheckPB4:
-       LDAA  PORTA
-       COMA
+CheckPB3:
+       ; PB3 (bit 3) -> Request1 (F1 button)
+       TBA                           ; Get inverted PORTA value from B
        ANDA  #%00001000
-       BEQ   CheckPB5
+       BEQ   CheckPB4
        MOVB  #1, Request1
-CheckPB5:
-       LDAA  PORTA
-       COMA
+CheckPB4:
+       ; PB4 (bit 4) -> Request2 (F2 button)
+       TBA                           ; Get inverted PORTA value from B
        ANDA  #%00010000
-       BEQ   CheckPB6
+       BEQ   CheckPB5
        MOVB  #1, Request2
-CheckPB6:
-       LDAA  PORTA
-       COMA
+CheckPB5:
+       ; PB5 (bit 5) -> Request0 (F0 button from inside)
+       TBA                           ; Get inverted PORTA value from B
        ANDA  #%00100000
-       BEQ   CheckPB7
+       BEQ   CheckPB6
        MOVB  #1, Request0
-CheckPB7:
-       LDAA  PORTA
-       COMA
+CheckPB6:
+       ; PB6 (bit 6) -> Request1 (F1 button from inside)
+       TBA                           ; Get inverted PORTA value from B
        ANDA  #%01000000
-       BEQ   CheckPB8
+       BEQ   CheckPB7
        MOVB  #1, Request1
-CheckPB8:
-       LDAA  PORTA
-       COMA
+CheckPB7:
+       ; PB7 (bit 7) -> Request2 (F2 button from inside)
+       TBA                           ; Get inverted PORTA value from B
        ANDA  #%10000000
-       BEQ   NoButtons
+       BEQ   NoButtonsPop
        MOVB  #1, Request2
+NoButtonsPop:
+       PULB                          ; Restore B register
+       BRA   NoButtons
 
 NoButtons:
        ; REMEMBER YA RAWAD W REEM: Priority: serve closest floor first
