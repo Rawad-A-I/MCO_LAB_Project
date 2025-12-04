@@ -59,19 +59,19 @@ _Startup:
        ; First disable PWM before configuring
        BCLR  PWME, #%00000001       ; Disable PWM Channel 0 first
        
-       ; Configure prescaler for Clock A FIRST
-       ; PCKA[2:0] = 000 means Clock A = E/1 (no prescale)
-       ; PCKA[2:0] = 001 means Clock A = E/2
-       ; PCKA[2:0] = 010 means Clock A = E/4
-       ; For 8MHz E-clock, to get 1kHz: Period = 8,000,000 / 1000 = 8000
-       ; Using E/2: Period = 4,000,000 / 1000 = 4000
-       ; Using E/4: Period = 2,000,000 / 1000 = 2000 (better for 16-bit period)
-       ; Set PCKA[2:0] = 010 (E/4): Clear PCKA0, Set PCKA1, Clear PCKA2
-       BCLR  PWMPRCLK, #%00000101   ; Clear PCKA0 (bit 0) and PCKA2 (bit 2)
-       BSET  PWMPRCLK, #%00000010   ; Set PCKA1 (bit 1) for E/4
+       ; Configure Port P pin 0 as output (PP0 for PWM Channel 0)
+       ; PWM pins are usually auto-configured, but set DDRP to be safe
+       BSET  DDRP, #%00000001       ; Set PP0 as output
        
-       ; Configure clock source - use Clock A
-       BCLR  PWMCLK, #%00000001     ; Channel 0 uses Clock A
+       ; Initialize all PWM registers to known state
+       ; Configure prescaler for Clock A: PCKA[2:0] = 010 (E/4)
+       ; For 8MHz E-clock: E/4 = 2MHz
+       ; To get 1kHz: Period = 2,000,000 / 1000 = 2000
+       CLR   PWMPRCLK              ; Clear all prescaler bits first
+       BSET  PWMPRCLK, #%00000010   ; Set PCKA1 (bit 1) for E/4 prescaler
+       
+       ; Configure clock source - use Clock A for Channel 0
+       BCLR  PWMCLK, #%00000001     ; Channel 0 uses Clock A (bit 0 = 0)
        
        ; Configure PWM polarity (start high)
        BSET  PWMPOL, #%00000001     ; Set polarity high for Channel 0
@@ -82,6 +82,9 @@ _Startup:
        
        ; Set duty cycle to 50% for buzzer (as per Lab 9 Task 1)
        MOVW  #1000, PWMDTY0         ; Duty = 1000 (50% of period = 2000/2)
+       
+       ; Small delay to let registers settle
+       JSR   DelayADC
        
        ; Keep PWM disabled initially (will enable when needed)
        BCLR  PWME, #%00000001       ; Ensure buzzer is disabled
@@ -144,13 +147,7 @@ MainLoop:
        ; Additional safety check: ensure Current is not already 0
        LDAB  Current
        BEQ   ClearTarget            ; Already at F0, clear target
-       ; Additional check: if Target is 0 and Current is 1, we can move down
-       CMPB  #1                      ; Check if Current is 1
-       BNE   DoMoveDown             ; If not 1, proceed normally
-       LDAA  Target
-       BEQ   DoMoveDown             ; If Target is 0, it's valid to move down
-       BRA   ClearTarget            ; Otherwise, clear target
-DoMoveDown:
+       ; Valid to move down - Target < Current and Current > 0
        JMP   MOVEDOWN               ; Move down
 
 ClearTarget:
@@ -294,6 +291,16 @@ MOVEDOWN:
        MOVB  #10, BlinkCount
 
 DownLoop:
+       ; Check target FIRST - critical for preventing freeze
+       LDAA  Target
+       LDAB  Current
+       CBA
+       BEQ   ARRIVED              ; Already at target, go to arrived immediately
+       
+       ; Safety check: if Current is already 0, we're at F0 (shouldn't happen, but safety)
+       LDAB  Current
+       BEQ   ARRIVED              ; Already at F0, go to arrived
+       
        ; Blink the Yellow LED continuosly 10 times
        BCLR  PTT, #%01000000
        JSR   DELAY
@@ -305,21 +312,23 @@ DownLoop:
        LDAA  BlinkCount
        BNE   DownLoop
        
-       ; After blinking, check if we've reached target BEFORE moving
+       ; After blinking cycle completes, check target again
        LDAA  Target
+       BEQ   DownLoopExit         ; Target was cleared, exit to main loop
        LDAB  Current
        CBA
-       BEQ   ARRIVED              ; Already at target, go to arrived
+       BEQ   ARRIVED              ; Reached target during blinking, go to arrived
        
-       ; Safety check: if Current is already 0, we're at F0
+       ; Safety check: if Current is 0, we're at F0
        LDAB  Current
        BEQ   ARRIVED              ; Already at F0, go to arrived
        
        ; Now it's safe to decrement - we know Current > 0 and Current != Target
        DEC   Current
        
-       ; After decrementing, check if we've reached the target
+       ; After decrementing, immediately check if we've reached the target
        LDAA  Target
+       BEQ   DownLoopExit         ; Target was cleared, exit to main loop
        LDAB  Current
        CBA
        BEQ   ARRIVED              ; Reached target, go to arrived
@@ -332,6 +341,11 @@ DownLoop:
        ; Not at target yet, continue moving down
        MOVB  #10, BlinkCount
        BRA   DownLoop
+       
+DownLoopExit:
+       ; Target was cleared, return to main loop to get new target
+       CLR   State
+       JMP   MainLoop
        
 FixUnderflow:
        CLR   Current              ; Fix underflow - set to 0
@@ -347,7 +361,11 @@ ARRIVED:
        ; Buzzer beeps for 2 seconds using PWM
        ; Enable PWM Channel 0 (buzzer) - PP0 pin
        ; Make sure PWM is properly configured before enabling
+       ; Re-verify PWM configuration is correct
        BSET  PWME, #%00000001       ; Enable PWM Channel 0 (buzzer)
+       
+       ; Small delay to let PWM start
+       JSR   DELAY
        
        ; Wait for 2 seconds (20 * 100ms = 2000ms)
        LDAB  #20
