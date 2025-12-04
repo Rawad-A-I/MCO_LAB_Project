@@ -96,12 +96,14 @@ _Startup:
        MOVB  #%00001000, ATD0CTL3    ; 1 conversion, right justified
        MOVB  #%10000101, ATD0CTL4    ; 8-bit resolution
 
-       ; Configure MCCNT for periodic button checking (every 100ms)
+       ; Configure MCCNT for periodic button checking using UNDERFLOW interrupt
+       ; PDF requirement: Use MCCNT underflow interrupt to check buttons periodically
        ; Bus clock = 8 MHz, prescaler = 128
        ; 8,000,000 / 128 = 62,500 Hz
        ; For 100ms: 62,500 / 10 = 6,250 counts
+       ; MCCNT counts down and generates interrupt on underflow (when it reaches 0)
        MOVB  #%11000111, MCCTL       ; Enable MCCNT, prescaler=128, interrupt ON
-       MOVW  #6250, MCCNT            ; 100ms interval
+       MOVW  #6250, MCCNT            ; 100ms interval (reloads on underflow)
 
        ; Configure LCD via SPI
        MOVB  #$10, MODRR             ; Route SPI to Port M
@@ -510,10 +512,11 @@ ArrWait:
        JMP   MainLoop
 
 MCCNT_ISR:
-       ; Clear interrupt flag
-       MOVB  #$80, MCFLG            ; Clear MCZF flag
+       ; MCCNT underflow interrupt - check buttons periodically
+       ; Clear interrupt flag (MCZF = Modulus Counter Zero Flag)
+       MOVB  #$80, MCFLG            ; Clear MCZF flag (bit 7)
 
-       ; Reload counter for next 100ms
+       ; Reload counter for next 100ms interval
        MOVW  #6250, MCCNT
 
        ;CHECK IF OBESE
@@ -546,88 +549,70 @@ WeightOK:
        
 NotRecovering:
        ; Read all buttons ONCE and process efficiently
+       ; According to PDF: Internal buttons PB3-PB4-PB5 on PA2-PA3-PA4
+       ;                  External buttons PB6-PB7-PB8 on PA5-PA6-PA7
        LDAA  PORTA
        COMA                         ; Invert (buttons are active low)
        PSHB                          ; Save B register
        TAB                           ; Copy inverted PORTA to B for processing
-       ANDA  #%11111100             ; Mask out lower 2 bits (unused) - check if any button pressed
-       LBEQ   ClearAllRequests       ; No buttons pressed, clear all request flags
+       ANDA  #%11111100             ; Mask out lower 2 bits (PA0-PA1 unused) - check if any button pressed
+       LBEQ   NoButtonsProcessed    ; No buttons pressed, don't set any requests
 
-       ; Check each button and set request flags using the stored inverted value in B
-       ; PB2 (bit 2) -> Request0 (F0 button)
+       ; Clear all requests first - we'll set them based on actual button presses
+       ; This ensures requests only exist when buttons are actually pressed
+       CLR   Request0
+       CLR   Request1
+       CLR   Request2
+
+       ; Check internal buttons (PA2-PA4 for floors 0, 1, 2)
+       ; PA2 (bit 2) = Internal F0 button
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%00000100
-       LBEQ   CheckPB3
+       LBEQ   CheckIntF1
        MOVB  #1, Request0
-       LBRA   CheckPB3                ; Set Request0, continue checking other buttons
-CheckPB3:
-       ; PB3 (bit 3) -> Request1 (F1 button)
+CheckIntF1:
+       ; PA3 (bit 3) = Internal F1 button
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%00001000
-       LBEQ   CheckPB4
+       LBEQ   CheckIntF2
        MOVB  #1, Request1
-       LBRA   CheckPB4                ; Set Request1, continue checking other buttons
-CheckPB4:
-       ; PB4 (bit 4) -> Request2 (F2 button)
+CheckIntF2:
+       ; PA4 (bit 4) = Internal F2 button
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%00010000
-       LBEQ   CheckPB5
+       LBEQ   CheckExtF0
        MOVB  #1, Request2
-       LBRA   CheckPB5                ; Set Request2, continue checking other buttons
-CheckPB5:
-       ; PB5 (bit 5) -> Request0 (F0 button from inside)
+       
+       ; Check external buttons (PA5-PA7 for floors 0, 1, 2)
+CheckExtF0:
+       ; PA5 (bit 5) = External F0 button
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%00100000
-       LBEQ   CheckPB6
-       MOVB  #1, Request0
-       LBRA   CheckPB6                ; Set Request0, continue checking other buttons
-CheckPB6:
-       ; PB6 (bit 6) -> Request1 (F1 button from inside)
+       LBEQ   CheckExtF1
+       MOVB  #1, Request0            ; Set Request0 (F0 requested)
+CheckExtF1:
+       ; PA6 (bit 6) = External F1 button
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%01000000
-       LBEQ   CheckPB7
-       MOVB  #1, Request1
-       LBRA   CheckPB7                ; Set Request1, continue checking other buttons
-CheckPB7:
-       ; PB7 (bit 7) -> Request2 (F2 button from inside)
+       LBEQ   CheckExtF2
+       MOVB  #1, Request1            ; Set Request1 (F1 requested)
+CheckExtF2:
+       ; PA7 (bit 7) = External F2 button
        TBA                           ; Get inverted PORTA value from B
        ANDA  #%10000000
        LBEQ   ButtonsProcessed
-       MOVB  #1, Request2
-       LBRA   ButtonsProcessed        ; Set Request2, done processing buttons
+       MOVB  #1, Request2            ; Set Request2 (F2 requested)
        
 ButtonsProcessed:
        PULB                          ; Restore B register
        LBRA   NoButtons
 
-ClearAllRequests:
-       ; No buttons are pressed
-       ; If elevator is idle and at target, clear request for current floor
-       ; (This prevents stale requests from causing unwanted movement)
-       LDAA  State
-       LBNE   ButtonsProcessedPop    ; Moving, don't clear requests
-       
-       ; Elevator is idle, check if we're at target
-       LDAA  Target
-       LDAB  Current
-       CBA                          ; Compare Target with Current
-       LBNE   ButtonsProcessedPop    ; Not at target, don't clear requests
-       
-       ; At target and idle - clear request for current floor
-       ; This prevents the elevator from moving to the same floor again
-       LDAA  Current
-       LBEQ   ClearReq0AtF0
-       CMPA  #1
-       LBEQ   ClearReq1AtF1
-       ; At F2
-       CLR   Request2
-       LBRA   ButtonsProcessedPop
-ClearReq0AtF0:
+NoButtonsProcessed:
+       ; No buttons are pressed - clear all request flags
+       ; This prevents stale requests from causing unwanted movement
        CLR   Request0
-       LBRA   ButtonsProcessedPop
-ClearReq1AtF1:
        CLR   Request1
-ButtonsProcessedPop:
+       CLR   Request2
        PULB                          ; Restore B register
        LBRA   NoButtons
 
@@ -708,21 +693,30 @@ CheckF0toF2:
        LBRA   ISR_Done
 
 CheckFromF1:
-       ; Check both up and down, serve closest first
-       ; When on F1, check F0 first (down), then F2 (up)
+       ; According to PDF: When on F1, if both F0 and F2 are requested,
+       ; serve in the direction of movement (closest first)
+       ; Since we're at F1, check both directions
+       ; Priority: Check if we should go down (F0) or up (F2)
+       ; According to PDF, if both are requested, serve closest first
+       ; From F1: F0 is 1 floor away (down), F2 is 1 floor away (up)
+       ; PDF says "serve closest first" - both are equidistant, so check F0 first (down)
        LDAA  Request0
        LBEQ   CheckF1Up              ; No F0 request, check F2
        ; F0 is requested - verify we're not already at F0 (safety check)
        LDAB  Current
        CMPB  #0
-       LBEQ   ISR_Done               ; Already at F0, don't set target
-       ; F0 is requested and we're at F1 - always serve F0 first from F1 (it's closer)
+       LBEQ   CheckF1Up              ; Already at F0 (shouldn't happen), check F2
+       ; F0 is requested and we're at F1 - serve F0 first (down, closest)
        MOVB  #0, Target
        LBRA   ISR_Done
 CheckF1Up:
        ; No F0 request, check F2
        LDAA  Request2
        LBEQ   ISR_Done               ; No requests, exit
+       ; F2 is requested - verify we're not already at F2 (safety check)
+       LDAB  Current
+       CMPB  #2
+       LBEQ   ISR_Done               ; Already at F2 (shouldn't happen), exit
        ; F2 is requested
        MOVB  #2, Target
        LBRA   ISR_Done
