@@ -1,0 +1,26 @@
+# Build artifacts
+Project/bin/
+Project/Project_Data/
+*.abs
+*.abs.phy
+*.abs.s19
+*.dbg
+*.o
+*.sx
+
+# IDE files
+*.mcp
+*.ini
+*.mem
+*.hwl
+*.stg
+*.tdt
+
+# Temporary files
+*.tmp
+*~
+.DS_Store
+
+# OneDrive
+~$*
+
