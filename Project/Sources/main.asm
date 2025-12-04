@@ -39,13 +39,14 @@ _Startup:
        CLI                   ; enable interrupts
 
        ; Initialize variables
-       CLR   Current         ; Start at ground floor
-       CLR   Target
-       CLR   State
-       CLR   Overload
-       CLR   Request0
-       CLR   Request1
-       CLR   Request2
+       CLR   Current         ; Start at ground floor (F0)
+       CLR   Target          ; No target initially
+       CLR   State           ; State = IDLE
+       CLR   Overload        ; No overload initially
+       CLR   Request0        ; No requests initially
+       CLR   Request1        ; No requests initially
+       CLR   Request2         ; No requests initially
+       CLR   BlinkCount      ; Initialize blink counter
        
        MOVB  #$00, DDRA
        MOVB  #$02, PUCR 
@@ -608,19 +609,19 @@ ButtonsProcessed:
        LBRA   NoButtons
 
 NoButtonsProcessed:
-       ; No buttons are pressed - clear all request flags
+       ; No buttons are pressed - clear all request flags IMMEDIATELY
        ; This prevents stale requests from causing unwanted movement
        CLR   Request0
        CLR   Request1
        CLR   Request2
        PULB                          ; Restore B register
-       LBRA   NoButtons
+       ; CRITICAL: Exit directly - don't check for targets when no buttons are pressed
+       LBRA   ISR_Done
 
 NoButtons:
-       ; REMEMBER YA RAWAD W REEM: Priority: serve closest floor first
+       ; This label is reached ONLY when buttons were processed (ButtonsProcessed)
+       ; NoButtonsProcessed goes directly to ISR_Done, so we know buttons were pressed
        ; Only set new Target if elevator is idle (State = 0)
-       ; We can't check Target == 0 because 0 is a valid floor (F0)
-       ; Instead, check if State is IDLE (0)
        LDAA  State
        LBNE   ISR_Done               ; Elevator is moving, don't change target
        
@@ -633,14 +634,19 @@ NoButtons:
        LBNE   ISR_Done               ; Target != Current, elevator has a pending target
        
        ; Target == Current (elevator is idle at target floor), can set new target
-       ; BUT: Only set target if there are actual pending requests
+       ; Since we're here from ButtonsProcessed, we know buttons were pressed
+       ; So if any request is set, it's valid
        ; Check if any request flags are set
        LDAA  Request0
        LBEQ   CheckReq1
-       ; Request0 is set - check if we're not already at F0
+       ; Request0 is set - verify we're not already at F0
        LDAB  Current
-       LBNE   HasRequest             ; Not at F0, has valid request
-       ; At F0 and Request0 is set - this should have been cleared, but clear it now
+       CMPB  #0
+       LBEQ   ClearReq0AndCheck      ; At F0, clear Request0 and check other requests
+       ; Not at F0, has valid request - proceed to set target
+       LBRA   HasRequest
+ClearReq0AndCheck:
+       ; At F0 and Request0 is set - clear it (shouldn't happen, but safety)
        CLR   Request0
        LBRA   CheckReq1
 HasRequest:
@@ -700,13 +706,17 @@ CheckFromF1:
        ; According to PDF, if both are requested, serve closest first
        ; From F1: F0 is 1 floor away (down), F2 is 1 floor away (up)
        ; PDF says "serve closest first" - both are equidistant, so check F0 first (down)
+       ; CRITICAL DEBUG: Check Request0 - if it's set, it means a button was pressed
+       ; But we need to verify Request0 is actually valid (not a stale value)
        LDAA  Request0
        LBEQ   CheckF1Up              ; No F0 request, check F2
-       ; F0 is requested - verify we're not already at F0 (safety check)
+       ; Request0 is set - verify we're actually at F1
        LDAB  Current
-       CMPB  #0
-       LBEQ   CheckF1Up              ; Already at F0 (shouldn't happen), check F2
-       ; F0 is requested and we're at F1 - serve F0 first (down, closest)
+       CMPB  #1                     ; Verify we're at F1
+       LBNE   CheckF1Up              ; Not at F1, something wrong - check F2 instead
+       ; We're at F1 and Request0 is set - this means F0 button was pressed
+       ; According to PDF, serve closest first - F0 is 1 floor down from F1
+       ; Set Target to F0
        MOVB  #0, Target
        LBRA   ISR_Done
 CheckF1Up:
