@@ -1,0 +1,1 @@
+[33m1f6910b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mdev[m[33m)[m Refactor main.asm to improve code readability and organization. Adjust indentation for consistency, enhance comments for clarity on initialization and button processing, and streamline target handling logic. Ensure proper handling of requests and state management during elevator operations.
