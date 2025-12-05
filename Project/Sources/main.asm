@@ -463,10 +463,10 @@ ARRIVED:
        ; Turn off green and yellow LEDs
        BCLR  PTT, #%11000000
        
-       ; Turn ON red LED (door opens)
+       ; Turn ON red LED
        BSET  PTT, #%00100000
        
-       ; Turn ON buzzer when door opens
+       ; Buzzer beeps for 2 seconds using PWM
        ; Enable PWM Channel 0 (buzzer) - PP0 pin
        ; CRITICAL: Disable interrupts briefly to prevent race condition with overload ISR
        SEI                          ; Disable interrupts to prevent race condition
@@ -475,8 +475,25 @@ ARRIVED:
        
        ; Small delay to let PWM start generating signal (ensure stable output)
        JSR   DELAY
+       JSR   DELAY                  ; Extra delay to ensure PWM is running
        
-       ; Red LED stays ON (door open)
+       ; Wait for 2 seconds (20 * 100ms = 2000ms)
+       LDAB  #20
+BuzzDelay:
+       JSR   DELAY                  ; 100ms delay
+       DECB
+       LBNE   BuzzDelay
+       
+       ; Turn OFF buzzer but keep red LED ON
+       ; CRITICAL: Disable interrupts briefly to prevent race condition
+       SEI                          ; Disable interrupts to prevent race condition
+       BCLR  PWME, #%00000001       ; Disable PWM Channel 0 (buzzer)
+       CLI                          ; Re-enable interrupts
+       
+       ; Small delay to ensure PWM stops cleanly
+       JSR   DELAY
+       
+       ; Red LED stays ON (already set above)
        
        ; Display current floor on LCD
        LDAA  #%00000001
@@ -511,17 +528,7 @@ ArrWait:
        DECB
        LBNE   ArrWait
        
-       ; Turn OFF red LED (door closed)
-       BCLR  PTT, #%00100000
-       
-       ; Turn OFF buzzer when door closes
-       ; CRITICAL: Disable interrupts briefly to prevent race condition
-       SEI                          ; Disable interrupts to prevent race condition
-       BCLR  PWME, #%00000001       ; Disable PWM Channel 0 (buzzer)
-       CLI                          ; Re-enable interrupts
-       
-       ; Small delay to ensure PWM stops cleanly
-       JSR   DELAY
+       BCLR  PTT, #%00100000        ; Turn OFF red LED (door closed)
        
        ; After arriving, check if there are more requests
        ; The ISR will set a new Target if there are pending requests
@@ -549,6 +556,7 @@ WaitADC:
        MOVB  #1, Overload           ; Set overload flag
        MOVB  #3, State              ; State = OVERLOAD
        BCLR  PTT, #%11000000        ; Turn off green and yellow LEDs
+       BSET  PWME, #%00000001       ; Enable buzzer for overload warning
        RTI                          ; Exit ISR during overload
 
 WeightOK:
@@ -557,8 +565,13 @@ WeightOK:
        CMPA  #3                     ; Check if was in overload state
        LBNE   NotRecovering
        
-       ; Recovering from overload, turn off red LED
+       ; Recovering from overload, turn off red LED and buzzer
+       ; CRITICAL: Use atomic operation to prevent race condition with ARRIVED
+       ; Disable interrupts briefly when modifying PWM register
+       SEI                          ; Disable interrupts to prevent race condition
        BCLR  PTT, #%00100000        ; Turn OFF red LED
+       BCLR  PWME, #%00000001       ; Turn OFF buzzer
+       CLI                          ; Re-enable interrupts
        CLR   State                  ; Reset state to IDLE
        
 NotRecovering:
