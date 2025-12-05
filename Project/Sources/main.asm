@@ -54,23 +54,14 @@ _Startup:
        
        ; Initialize PWM for Buzzer (Lab 9 Configuration)
        ; Disable PWM first before configuring
-       CLR   PWME
-       
-       MOVB  #$00, PWMCLK            ; Send 0 to Clock A
-       MOVB  #$03, PWMPRCLK          ; Multiplier by 8
-       MOVB  #$10, PWMPOL             ; Link PWME to channel 4
-       MOVB  #$0C, PWMCTL
-       CLR   PWMCNT4                  ; Clear 4th channel
-       CLR   PWMCNT0                  ; Clear PWM0 counter
-       CLR   PWMCNT1                  ; Clear PWM1 counter
-       MOVW  #426, PWMPER0            ; Period = 426 × 8 × 0.5μs = 1704μs ≈ 587Hz
-       MOVW  #426, PWMPER1            ; Same period for PWM1
-       MOVW  #298, PWMDTY0            ; PWM0 duty = 298/426 = 69.95% ≈ 70%
-       MOVW  #298, PWMDTY1            ; PWM1 duty = 298/426 = 69.95% ≈ 70%
-       
-       ; Configure channel 4 period and duty (buzzer uses channel 4)
-       MOVW  #426, PWMPER4            ; Period for channel 4
-       MOVW  #298, PWMDTY4            ; Duty for channel 4 (70%)
+       MOVB #$10, PWME               ; PWME 4 Enable
+       MOVB #$00, PWMCLK             ; Send 0 to Clock A
+       MOVB #$03, PWMPRCLK           ; Multiplier by 8. 
+       MOVB #$10, PWMPOL             ; Link PWME to channel 4
+       MOVB #$0C, PWMCTL
+       CLR PWMCNT4 ;CLEAR 4TH CHANNEL
+ 
+
        
        ; Keep PWM disabled initially - will enable when needed
        ; Do NOT enable here - enable only when buzzer should sound
@@ -139,7 +130,7 @@ ClearTarget:
 OverloadWait:
        ; Keep blinking red LED and beeping until weight is normal
        ; Enable buzzer during overload
-       BSET  PWME, #%00010000       ; Enable PWM Channel 4 (buzzer)
+       JSR   Buzz                   ; Call buzzer subroutine
        
        LDAA  #%00000001             ; Clear LCD
        JSR   SENDINST
@@ -214,7 +205,7 @@ MOVEUP:
        JSR   SENDDATA
 
        ; Enable buzzer when moving up
-       BSET  PWME, #%00010000         ; Enable PWM Channel 4 (buzzer)
+       JSR   Buzz                   ; Call buzzer subroutine
 
        MOVB  #10, BlinkCount
 
@@ -379,7 +370,7 @@ WaitADC:
        MOVB  #1, Overload           ; Set overload flag
        MOVB  #3, State              ; State = OVERLOAD
        BCLR  PTT, #%11000000        ; Turn off green and yellow LEDs
-       BSET  PWME, #%00010000       ; Enable PWM Channel 4 (buzzer)
+       JSR   Buzz                   ; Call buzzer subroutine
        RTI                          ; Exit ISR during overload
 
 WeightOK:
@@ -495,6 +486,9 @@ ISR_Done:
 
 
 ;Subroutines
+Buzz:  MOVB #250, PWMPER4 ; We need period of 1ms = 250 * 8 (multiplier in PWMPOL) * 0.5 (bus clock)
+       MOVB #125, PWMDTY4 ; We need a duty cycle which is 50% of period
+       RTS
 SENDINST:
        TAB                          ; Save A to B
        RORA                         ; Shift right 4 times to get high nibble
