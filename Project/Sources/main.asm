@@ -51,7 +51,20 @@ _Startup:
        MOVB  #$02, PUCR 
        MOVB  #%11100000, DDRT
        MOVB  #%00000000, PTT
- 
+       
+       ; Initialize PWM for Buzzer (Lab 9 Configuration)
+       MOVB  #$10, PWME              ; PWME 4 Enable
+       MOVB  #$00, PWMCLK            ; Send 0 to Clock A
+       MOVB  #$03, PWMPRCLK          ; Multiplier by 8
+       MOVB  #$10, PWMPOL             ; Link PWME to channel 4
+       MOVB  #$0C, PWMCTL
+       CLR   PWMCNT4                  ; Clear 4th channel
+       CLR   PWMCNT0                  ; Clear PWM0 counter
+       CLR   PWMCNT1                  ; Clear PWM1 counter
+       MOVW  #426, PWMPER0            ; Period = 426 × 8 × 0.5μs = 1704μs ≈ 587Hz
+       MOVW  #426, PWMPER1            ; Same period for PWM1
+       MOVW  #298, PWMDTY0            ; PWM0 duty = 298/426 = 69.95% ≈ 70%
+       MOVW  #298, PWMDTY1            ; PWM1 duty = 298/426 = 69.95% ≈ 70%
 
        ; Initialize ADC (Weight Sensor on channel 5)
        MOVB  #%11000000, ATD0CTL2    ; Power up ATD
@@ -116,6 +129,9 @@ ClearTarget:
 
 OverloadWait:
        ; Keep blinking red LED and beeping until weight is normal
+       ; Enable buzzer during overload
+       BSET  PWME, #%00010000       ; Enable PWM Channel 4 (buzzer)
+       
        LDAA  #%00000001             ; Clear LCD
        JSR   SENDINST
        JSR   DELAY
@@ -148,7 +164,8 @@ OverloadWait:
        LDAA  Overload
        BNE   OverloadWait           ; Still overloaded, continue blinking
        
-       ; Overload cleared, restore display
+       ; Overload cleared, disable buzzer and restore display
+       BCLR  PWME, #%00010000       ; Disable PWM Channel 4 (buzzer)
        LDAA  #%00000001             ; Clear LCD
        JSR   SENDINST
        JSR   DELAY
@@ -186,6 +203,9 @@ MOVEUP:
        JSR   SENDDATA
        LDAA  #':'
        JSR   SENDDATA
+
+       ; Enable buzzer when moving up
+       BSET  PWME, #%00010000         ; Enable PWM Channel 4 (buzzer)
 
        MOVB  #10, BlinkCount
 
@@ -277,8 +297,10 @@ DownLoop:
 ARRIVED:
        ; Turn off green LED
        BCLR  PTT, #%11000000
-       ; Buzzer beeps for 2 seconds
-       BSET  PTT, #%00100000        ; Turn ON red LED and buzzer
+       ; Disable buzzer when elevator arrives
+       BCLR  PWME, #%00010000       ; Disable PWM Channel 4 (buzzer)
+       ; Turn ON red LED
+       BSET  PTT, #%00100000
        
        LDAB #20
 BuzzDelay:
@@ -348,6 +370,7 @@ WaitADC:
        MOVB  #1, Overload           ; Set overload flag
        MOVB  #3, State              ; State = OVERLOAD
        BCLR  PTT, #%11000000        ; Turn off green and yellow LEDs
+       BSET  PWME, #%00010000       ; Enable PWM Channel 4 (buzzer)
        RTI                          ; Exit ISR during overload
 
 WeightOK:
@@ -356,8 +379,9 @@ WeightOK:
        CMPA  #3                     ; Check if was in overload state
        BNE   NotRecovering
        
-       ; Recovering from overload, turn off red LED
+       ; Recovering from overload, turn off red LED and disable buzzer
        BCLR  PTT, #%00100000        ; Turn OFF red LED
+       BCLR  PWME, #%00010000       ; Disable PWM Channel 4 (buzzer)
        CLR   State                  ; Reset state to IDLE
        
 NotRecovering:
