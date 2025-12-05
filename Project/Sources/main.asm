@@ -486,9 +486,10 @@ ISR_Done:
 
 
 ;Subroutines
-Buzz:  MOVB #250, PWMPER4 ; We need period of 1ms = 250 * 8 (multiplier in PWMPOL) * 0.5 (bus clock)
-       MOVB #125, PWMDTY4 ; We need a duty cycle which is 50% of period
-       RTS
+Buzz:
+       MOVB  #250, PWMPER4           ; Period of 1ms = 250 * 8 (multiplier) * 0.5 (bus clock)
+       MOVB  #125, PWMDTY4            ; Duty cycle = 50% of period
+       RTS
 SENDINST:
        TAB                          ; Save A to B
        RORA                         ; Shift right 4 times to get high nibble
