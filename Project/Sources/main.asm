@@ -53,7 +53,9 @@ _Startup:
        MOVB  #%00000000, PTT
        
        ; Initialize PWM for Buzzer (Lab 9 Configuration)
-       MOVB  #$10, PWME              ; PWME 4 Enable
+       ; Disable PWM first before configuring
+       CLR   PWME
+       
        MOVB  #$00, PWMCLK            ; Send 0 to Clock A
        MOVB  #$03, PWMPRCLK          ; Multiplier by 8
        MOVB  #$10, PWMPOL             ; Link PWME to channel 4
@@ -65,6 +67,13 @@ _Startup:
        MOVW  #426, PWMPER1            ; Same period for PWM1
        MOVW  #298, PWMDTY0            ; PWM0 duty = 298/426 = 69.95% ≈ 70%
        MOVW  #298, PWMDTY1            ; PWM1 duty = 298/426 = 69.95% ≈ 70%
+       
+       ; Configure channel 4 period and duty (buzzer uses channel 4)
+       MOVW  #426, PWMPER4            ; Period for channel 4
+       MOVW  #298, PWMDTY4            ; Duty for channel 4 (70%)
+       
+       ; Keep PWM disabled initially - will enable when needed
+       ; Do NOT enable here - enable only when buzzer should sound
 
        ; Initialize ADC (Weight Sensor on channel 5)
        MOVB  #%11000000, ATD0CTL2    ; Power up ATD
