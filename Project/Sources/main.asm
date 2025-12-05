@@ -53,8 +53,7 @@ _Startup:
        MOVB  #%00000000, PTT
        
        ; Initialize PWM for Buzzer (Lab 9 Configuration)
-       ; Disable PWM first before configuring
-       MOVB #$10, PWME               ; PWME 4 Enable
+       MOVB  #$10, PWME               ; PWME 4 Enable
        MOVB #$00, PWMCLK             ; Send 0 to Clock A
        MOVB #$03, PWMPRCLK           ; Multiplier by 8. 
        MOVB #$10, PWMPOL             ; Link PWME to channel 4
