@@ -1,26 +1,31 @@
-# Build artifacts
+# CodeWarrior build outputs
 Project/bin/
 Project/Project_Data/
 *.abs
 *.abs.phy
 *.abs.s19
-*.dbg
 *.o
 *.sx
+*.dbg
 
-# IDE files
+# IDE specific files
 *.mcp
 *.ini
-*.mem
-*.hwl
 *.stg
 *.tdt
+*.hwl
+*.mem
 
 # Temporary files
-*.tmp
 *~
+*.bak
+*.tmp
+*.swp
 .DS_Store
+Thumbs.db
 
-# OneDrive
-~$*
-
+# Keep source files
+!Project/Sources/
+!Project/Sources/**
+!Project/cmd/
+!Project/prm/

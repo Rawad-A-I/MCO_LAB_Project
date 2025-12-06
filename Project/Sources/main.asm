@@ -1,125 +1,143 @@
-;***********************
-;* This stationery serves as the framework for a                 *
-;* user application (single file, absolute assembly application) *
-;* For a more comprehensive program that                          *
-;* demonstrates the more advanced functionality of this           *
-;* processor, please see the demonstration applications           *
-;* located in the examples subdirectory of the                    *
-;* Freescale CodeWarrior for the HC12 Program directory           *
-;***********************
+;**************************************************************
+;* Freescale HC12 Elevator System (Final Version – Red/Buzzer Linked)
+;**************************************************************
 
-; export symbols
-       XDEF Entry, _Startup            ; export 'Entry' symbol
-       ABSENTRY Entry                  ; for absolute assembly: mark this as application entry point
+       XDEF Entry, _Startup
+       ABSENTRY Entry
 
-; Include derivative-specific definitions 
        INCLUDE 'derivative.inc'
 
-ROMStart    EQU  $4000  ; absolute address to place my code/constant data
+ROMStart   EQU   $4000
 
-; variable/data section
+;==============================
+; RAM VARIABLES
+;==============================
        ORG RAMStart
-; Insert here your data definition.
-Current     DS.B 1      ; 0=GND, 1=1st, 2=2nd
+
+Current     DS.B 1
 Target      DS.B 1
-State       DS.B 1      ; 0=IDLE, 1=UP, 2=DOWN, 3=OVERLOADED
-ADCValue    DS.B 1      ; Weight Sensor Reading
-Overload    DS.B 1      ; Flag: 1=overloaded, 0=normal
+State       DS.B 1
+ADCValue    DS.B 1
+Overload    DS.B 1
 Request0    DS.B 1
 Request1    DS.B 1
 Request2    DS.B 1
 BlinkCount  DS.B 1
 
-; code section
-       ORG   ROMStart
+;==============================================================
+; CODE SECTION
+;==============================================================
+       ORG ROMStart
 
 Entry:
 _Startup:
-       LDS   #RAMEnd+1       ; initialize the stack pointer
-       CLI                   ; enable interrupts
+       LDS   #RAMEnd+1
+       CLI
 
-       ; Initialize variables
-       CLR   Current         ; Start at ground floor
-       CLR   Target
+;--------------------------------
+; Initialize Internal Variables
+;--------------------------------
+       CLR   Current
+       MOVB  #3, Target
        CLR   State
        CLR   Overload
        CLR   Request0
        CLR   Request1
        CLR   Request2
-       
+
+;--------------------------------
+; I/O PORT INITIALIZATION
+;--------------------------------
        MOVB  #$00, DDRA
-       MOVB  #$02, PUCR 
+       MOVB  #$02, PUCR
        MOVB  #%11100000, DDRT
        MOVB  #%00000000, PTT
- 
 
-       ; Initialize ADC (Weight Sensor on channel 5)
-       MOVB  #%11000000, ATD0CTL2    ; Power up ATD
-       JSR   DelayADC                ; Wait for stabilization
-       MOVB  #%00001000, ATD0CTL3    ; 1 conversion, right justified
-       MOVB  #%10000101, ATD0CTL4    ; 8-bit resolution
+;--------------------------------
+; Initialize Buzzer PWM
+;--------------------------------
+       JSR init_PWM_Buzzer
 
-       ; Configure MCCNT for periodic button checking (every 100ms)
-       ; Bus clock = 8 MHz, prescaler = 128
-       ; 8,000,000 / 128 = 62,500 Hz
-       ; For 100ms: 62,500 / 10 = 6,250 counts
-       MOVB  #%11000111, MCCTL       ; Enable MCCNT, prescaler=128, interrupt ON
-       MOVW  #6250, MCCNT            ; 100ms interval
+;--------------------------------
+; ADC INIT
+;--------------------------------
+       MOVB  #%11000000, ATD0CTL2
+       JSR   DelayADC
+       MOVB  #%00001000, ATD0CTL3
+       MOVB  #%10000101, ATD0CTL4
 
-       ; Configure LCD via SPI
-       MOVB  #$10, MODRR             ; Route SPI to Port M
-       MOVB  #$38, DDRM              ; Set Port M pins as outputs
-       MOVB  #$52, SPI0CR1           ; SPI master mode, CPOL=1, CPHA=0
-       MOVB  #$10, SPI0CR2           ; SS output enabled
-       MOVB  #$00, SPI0BR            ; SPI baud rate
+;--------------------------------
+; MODULUS COUNTER SETUP
+;--------------------------------
+       MOVB  #%11000111, MCCTL
+       MOVW  #6250, MCCNT
 
-       ; Initialize LCD with 7 commands
-       LDAA  #%00110011              ; Function set
+;--------------------------------
+; LCD SPI CONFIG
+;--------------------------------
+       MOVB  #$10, MODRR
+       MOVB  #$38, DDRM
+       MOVB  #$52, SPI0CR1
+       MOVB  #$10, SPI0CR2
+       MOVB  #$00, SPI0BR
+
+;--------------------------------
+; LCD INIT COMMANDS
+;--------------------------------
+       LDAA  #%00110011
        JSR   SENDINST
-       LDAA  #%00110010              ; Function set
+       LDAA  #%00110010
        JSR   SENDINST
-       LDAA  #%00101000              ; 4-bit mode, 2 lines
+       LDAA  #%00101000
        JSR   SENDINST
-       LDAA  #%00001000              ; Display off
+       LDAA  #%00001000
        JSR   SENDINST
-       LDAA  #%00000001              ; Clear display
+       LDAA  #%00000001
        JSR   SENDINST
-       LDAA  #%00000110              ; Entry mode
+       LDAA  #%00000110
        JSR   SENDINST
-       LDAA  #%00001110              ; Display on, cursor on
+       LDAA  #%00001110
        JSR   SENDINST
 
+; Display F0
        LDAA  #'F'
        JSR   SENDDATA
        LDAA  Current
        ADDA  #'0'
        JSR   SENDDATA
-;Mainloop waits for the interrupt to update the target
+
+;=========================================================
+; MAIN LOOP
+;=========================================================
 MainLoop:
-       LDAA  Overload               ; Check overload flag
-       BNE   OverloadWait           ; If overloaded, wait
+       LDAA  Overload
+       BNE   OverloadWait
 
-       LDAA  Target                 ; Check if there's a target
-       BEQ   MainLoop               ; No target, keep waiting
+       LDAA  Target
+       CMPA  #3
+       BEQ   MainLoop
 
-       ; Compare current floor with target
        LDAB  Current
-       CBA                          ; Compare A (Target) with B (Current)
-       BEQ   ClearTarget            ; Already at target floor
-       BHI   MOVEUP                 ; Target > Current, move up
-       JMP   MOVEDOWN               ; else, move down
+       CBA
+       BEQ   ClearTarget
+       BHI   MOVEUP
+       JMP   MOVEDOWN
 
 ClearTarget:
-       CLR   Target                 ; Clear target
+       MOVB  #3, Target
        BRA   MainLoop
 
+;=========================================================
+; OVERLOAD HANDLING  (RED LED + BUZZER TOGETHER)
+;=========================================================
 OverloadWait:
-       ; Keep blinking red LED and beeping until weight is normal
-       LDAA  #%00000001             ; Clear LCD
+
+       ; Show OVERLOAD message
+       LDAA  #%00000001
        JSR   SENDINST
        JSR   DELAY
-       
-       LDAA  #'O'                   ; Write OVERLOAD on LCD
+
+       LDAA  #'O'
        JSR   SENDDATA
        LDAA  #'V'
        JSR   SENDDATA
@@ -135,37 +153,55 @@ OverloadWait:
        JSR   SENDDATA
        LDAA  #'D'
        JSR   SENDDATA
-       
-       BSET  PTT, #%00100000        ; Turn ON red LED
+
+       ; Blink RED LED and sync buzzer with it
+       BSET  PTT, #%00100000   ; Red ON
+       JSR   Buzz              ; Buzzer ON with red
+
        JSR   DELAY
        JSR   DELAY
-       BCLR  PTT, #%00100000        ; Turn OFF red LED
+
+       BCLR  PTT, #%00100000   ; Red OFF
+       JSR   StopBuzz          ; Buzzer OFF with red
+
        JSR   DELAY
        JSR   DELAY
-       
-       ; Check if still overloaded
+
+       ; Check again if still overloaded
        LDAA  Overload
-       BNE   OverloadWait           ; Still overloaded, continue blinking
-       
-       ; Overload cleared, restore display
-       LDAA  #%00000001             ; Clear LCD
+       BNE   OverloadWait
+
+       ; Clear done in WeightOK, but be safe
+       JSR   StopBuzz
+       BCLR  PTT, #%00100000
+
+       LDAA  #%00000001
        JSR   SENDINST
        JSR   DELAY
+
        LDAA  #'F'
        JSR   SENDDATA
        LDAA  Current
        ADDA  #'0'
        JSR   SENDDATA
-       BRA   MainLoop
 
+       LBRA  MainLoop
+
+;=========================================================
+; MOVING UP  (LONG BEEP BEFORE, NO BUZZ WHILE MOVING)
+;=========================================================
 MOVEUP:
-       MOVB  #1, State              ; Declare moving up
-       
-       LDAA  #%00000001             ; Clear LCD
+       MOVB  #1, State
+
+       ; Long door closing beep BEFORE LCD message
+       JSR   DoorCloseBeep    ; ~Option C (longer beep)
+
+       ; Then display MOVING UP
+       LDAA  #%00000001
        JSR   SENDINST
        JSR   DELAY
-       
-       LDAA  #'M'                   ; Write MOVING UP on LCD
+
+       LDAA  #'M'
        JSR   SENDDATA
        LDAA  #'O'
        JSR   SENDDATA
@@ -189,39 +225,42 @@ MOVEUP:
        MOVB  #10, BlinkCount
 
 UpLoop:
-       ; Blink the Green LED continuosly 10 times
        BCLR  PTT, #%10000000
        JSR   DELAY
        JSR   DELAY
        BSET  PTT, #%10000000
        JSR   DELAY
        JSR   DELAY
+
        DEC   BlinkCount
        LDAA  BlinkCount
        BNE   UpLoop
-       
-       ; Increment the current floor
+
        INC   Current
-       
-       ; compare with requested
+
        LDAA  Target
        LDAB  Current
        CBA
-       ; if equal, branch to ARRIVED
-       LBEQ   ARRIVED
-       ; else bra UpLoop
+       LBEQ  ARRIVED
+
        MOVB  #10, BlinkCount
        BRA   UpLoop
 
+;=========================================================
+; MOVING DOWN  (LONG BEEP BEFORE, NO BUZZ WHILE MOVING)
+;=========================================================
 MOVEDOWN:
-       MOVB  #2, State              ; Declare moving up
+       MOVB  #2, State
 
-       LDAA  #%00000001             ;Clear LCD
+       ; Long door closing beep BEFORE LCD message
+       JSR   DoorCloseBeep
+
+       ; Display MOVING DOWN
+       LDAA  #%00000001
        JSR   SENDINST
        JSR   DELAY
 
-
-       LDAA  #'M'                   ; Write MOVING UP on LCD
+       LDAA  #'M'
        JSR   SENDDATA
        LDAA  #'O'
        JSR   SENDDATA
@@ -233,8 +272,10 @@ MOVEDOWN:
        JSR   SENDDATA
        LDAA  #'G'
        JSR   SENDDATA
+
        LDAA  #%11000000
        JSR   SENDINST
+
        LDAA  #'D'
        JSR   SENDDATA
        LDAA  #'O'
@@ -249,154 +290,167 @@ MOVEDOWN:
        MOVB  #10, BlinkCount
 
 DownLoop:
-       ; Blink the Yellow LED continuosly 10 times
        BCLR  PTT, #%01000000
        JSR   DELAY
        JSR   DELAY
        BSET  PTT, #%01000000
        JSR   DELAY
        JSR   DELAY
+
        DEC   BlinkCount
        LDAA  BlinkCount
        BNE   DownLoop
-       
-       ; Decrement the current floor
+
        DEC   Current
-       
-       ; compare with requested
+
        LDAA  Target
        LDAB  Current
        CBA
-       ; if equal, branch to ARRIVED
        BEQ   ARRIVED
-       ; else bra DownLoop
+
        MOVB  #10, BlinkCount
        BRA   DownLoop
 
+;=========================================================
+; ARRIVED — RED LED + BUZZER LOCKED TOGETHER
+;=========================================================
 ARRIVED:
-       ; Turn off green LED
-       BCLR  PTT, #%11000000
-       ; Buzzer beeps for 2 seconds
-       BSET  PTT, #%00100000        ; Turn ON red LED and buzzer
-       
-       LDAB #20
-BuzzDelay:
+       ; Turn off movement LEDs
+       BCLR  PTT, #%11000000   ; clear green & yellow
+
+       ; Turn ON red LED and buzzer immediately together
+       BSET  PTT, #%00100000
+       JSR   Buzz
+
+       ; Door-open wait (red + buzzer ON)
+       LDAB  #20
+ArrDoorDelay:
        JSR   DELAY
        DECB
-       BNE   BuzzDelay
-       
-       BSET  PTT, #%00100000        ; Turn OFF buzzer but keep red LED ON
-       
-       ; Red LED stays ON (no blinking)
-       BSET  PTT, #%00100000        ; Ensure red LED is ON
-       
-       ; Display current floor on LCD
+       BNE   ArrDoorDelay
+
+       ; Update LCD with current floor while red/buzzer still ON (optional)
        LDAA  #%00000001
        JSR   SENDINST
        JSR   DELAY
-       
+
        LDAA  #'F'
        JSR   SENDDATA
        LDAA  Current
        ADDA  #'0'
        JSR   SENDDATA
-       
+
+       ; Clear request for this floor
        LDAA  Current
        BEQ   ClearReq0
        CMPA  #1
        BEQ   ClearReq1
        CLR   Request2
        BRA   ArrDone
+
 ClearReq0:
        CLR   Request0
        BRA   ArrDone
+
 ClearReq1:
        CLR   Request1
+
 ArrDone:
-       CLR   Target
+       MOVB  #3, Target
        CLR   State
-       
-       ; Wait with red LED ON
-       LDAB  #10
-ArrWait:
-       JSR   DELAY
-       DECB
-       BNE   ArrWait
-       
-       BCLR  PTT, #%00100000        ; Turn OFF red LED
+
+       ; Red LED + buzzer OFF together when done
+       BCLR  PTT, #%00100000
+       JSR   StopBuzz
+
        JMP   MainLoop
 
+;=========================================================
+; INTERRUPT SERVICE ROUTINE
+;=========================================================
 MCCNT_ISR:
-       ; Clear interrupt flag
-       MOVB  #$80, MCFLG            ; Clear MCZF flag
-
-       ; Reload counter for next 100ms
+       MOVB  #$80, MCFLG
        MOVW  #6250, MCCNT
 
-       ;CHECK IF OBESE
-       MOVB  #%10100101, ATD0CTL5   ; Start ADC conversion
+       MOVB  #%10100101, ATD0CTL5
+
 WaitADC:
-       BRCLR ATD0STAT0, #$80, WaitADC ; Wait for conversion
-       LDAA  ATD0DR0L               ; Read ADC value
+       BRCLR ATD0STAT0, #$80, WaitADC
+       LDAA  ATD0DR0L
        STAA  ADCValue
 
-       CMPA  #125                   ; Check threshold
-       BLS   WeightOK               ; Weight <= 125, OK
+       CMPA  #125
+       BLS   WeightOK
 
-       ; Overload detected
-       MOVB  #1, Overload           ; Set overload flag
-       MOVB  #3, State              ; State = OVERLOAD
-       BCLR  PTT, #%11000000        ; Turn off green and yellow LEDs
-       RTI                          ; Exit ISR during overload
+       MOVB  #1, Overload
+       MOVB  #3, State
+       BCLR  PTT, #%11000000
+       ; Overload logic handled in main loop (OverloadWait)
+       RTI
 
 WeightOK:
-       CLR   Overload               ; Clear overload flag (removes overload when pot drops)
+       CLR   Overload
        LDAA  State
-       CMPA  #3                     ; Check if was in overload state
+       CMPA  #3
        BNE   NotRecovering
-       
-       ; Recovering from overload, turn off red LED
-       BCLR  PTT, #%00100000        ; Turn OFF red LED
-       CLR   State                  ; Reset state to IDLE
-       
+
+       ; Recovering from overload: turn red & buzzer OFF
+       BCLR  PTT, #%00100000
+       JSR   StopBuzz
+       CLR   State
+
 NotRecovering:
-       ; Read all buttons and do what is needed
+       ; Check if any buttons pressed at all
        LDAA  PORTA
        COMA
        ANDA  #%11111100
-       BEQ   NoButtons              ; No buttons pressed
+       BEQ   NoButtons
 
-       ; Check each button and set Target accordingly
+; -------------------------
+; Button Decode (Correct Syntax, mapping unchanged)
+; -------------------------
+
+; PB4  (bit 2) ? Request0
        LDAA  PORTA
        COMA
        ANDA  #%00000100
-       BEQ   CheckPB4
+       BEQ   PB4_Done
        MOVB  #1, Request0
-CheckPB4:
+PB4_Done:
+
+; PB5  (bit 3) ? Request1
        LDAA  PORTA
        COMA
        ANDA  #%00001000
-       BEQ   CheckPB5
+       BEQ   PB5_Done
        MOVB  #1, Request1
-CheckPB5:
+PB5_Done:
+
+; PB6  (bit 4) ? Request2
        LDAA  PORTA
        COMA
        ANDA  #%00010000
-       BEQ   CheckPB6
+       BEQ   PB6_Done
        MOVB  #1, Request2
-CheckPB6:
+PB6_Done:
+
+; PB7  (bit 5) ? Request0
        LDAA  PORTA
        COMA
        ANDA  #%00100000
-       BEQ   CheckPB7
+       BEQ   PB7_Done
        MOVB  #1, Request0
-CheckPB7:
+PB7_Done:
+
+; PB8  (bit 6) ? Request1
        LDAA  PORTA
        COMA
        ANDA  #%01000000
-       BEQ   CheckPB8
+       BEQ   PB8_Done
        MOVB  #1, Request1
-CheckPB8:
+PB8_Done:
+
+; PB9  (bit 7) ? Request2
        LDAA  PORTA
        COMA
        ANDA  #%10000000
@@ -404,114 +458,166 @@ CheckPB8:
        MOVB  #1, Request2
 
 NoButtons:
-       ; REMEMBER YA RAWAD W REEM: Priority: serve closest floor first
        LDAA  Target
+       CMPA  #3
        BNE   ISR_Done
-       
+
        LDAA  Current
-       BEQ   CheckFromF0
+       BEQ   FromF0
        CMPA  #1
-       BEQ   CheckFromF1
-       BRA   CheckFromF2
+       BEQ   FromF1
+       BRA   FromF2
 
-CheckFromF0:
+FromF0:
        LDAA  Request1
-       BEQ   CheckF0toF2
+       BEQ   F0_F2
        MOVB  #1, Target
        BRA   ISR_Done
-CheckF0toF2:
+
+F0_F2:
        LDAA  Request2
        BEQ   ISR_Done
        MOVB  #2, Target
        BRA   ISR_Done
 
-CheckFromF1:
-       ; Check both up and down, serve closest
+FromF1:
        LDAA  Request0
-       BEQ   CheckF1Up
+       BEQ   F1_Up
        LDAB  Request2
-       BEQ   ServeF0FromF1          ; Only F0 requested
-       ; Both requested, F0 is closer
+       BEQ   ServeF0
        MOVB  #0, Target
        BRA   ISR_Done
-ServeF0FromF1:
+
+ServeF0:
        MOVB  #0, Target
        BRA   ISR_Done
-CheckF1Up:
+
+F1_Up:
        LDAA  Request2
        BEQ   ISR_Done
        MOVB  #2, Target
        BRA   ISR_Done
 
-CheckFromF2:
+FromF2:
        LDAA  Request1
-       BEQ   CheckF2toF0
+       BEQ   F2_F0
        MOVB  #1, Target
        BRA   ISR_Done
-CheckF2toF0:
+
+F2_F0:
        LDAA  Request0
        BEQ   ISR_Done
        MOVB  #0, Target
 
 ISR_Done:
-       RTI                          ; Return from interrupt
+       RTI
 
-       BRA   Exit
+;=========================================================
+; SUBROUTINES
+;=========================================================
 
+;---------------------------------------
+; PWM BUZZER INITIALIZATION
+;---------------------------------------
+init_PWM_Buzzer:
+       BSET   DDRP, #$10
+       BCLR   PTP,  #$10
 
-;Subroutines
+       BCLR   PWME,   #$10
+       BSET   PWMPOL, #$10
+       BCLR   PWMCLK, #$10
+
+       MOVB   #$03, PWMPRCLK
+       MOVB   #$00, PWMCTL
+
+       CLR    PWMCNT4
+       MOVB   #250, PWMPER4
+       MOVB   #125, PWMDTY4
+
+       RTS
+
+;---------------------------------------
+; ENABLE BUZZER
+;---------------------------------------
+Buzz:
+       BSET  PWME, #$10
+       RTS
+
+;---------------------------------------
+; DISABLE BUZZER
+;---------------------------------------
+StopBuzz:
+       BCLR  PWME, #$10
+       RTS
+
+;---------------------------------------
+; LONG DOOR-CLOSING BEEP (~Option C)
+;---------------------------------------
+DoorCloseBeep:
+       JSR   Buzz
+       LDAB  #20           ; increase for even longer beep if needed
+DCB_Loop:
+       JSR   DELAY
+       DECB
+       BNE   DCB_Loop
+       JSR   StopBuzz
+       RTS
+
+;---------------------------------------
+; LCD/SPI ROUTINES
+;---------------------------------------
 SENDINST:
-       TAB                          ; Save A to B
-       RORA                         ; Shift right 4 times to get high nibble
+       TAB
        RORA
        RORA
        RORA
-       ORAA  #%10000000             ; Set RS=0 (instruction), E=1
-       ANDA  #%10001111             ; Mask unwanted bits
-       JSR   SENDSPI                ; Send high nibble
-       ANDA  #%00001111             ; E=0 (latch data)
+       RORA
+       ORAA  #%10000000
+       ANDA  #%10001111
+       JSR   SENDSPI
+       ANDA  #%00001111
        JSR   SENDSPI
        JSR   DELAY
 
-       TBA                          ; Restore A from B (low nibble)
-       ORAA  #%10000000             ; Set RS=0, E=1
-       ANDA  #%10001111             ; Mask unwanted bits
-       JSR   SENDSPI                ; Send low nibble
-       ANDA  #%00001111             ; E=0 (latch data)
+       TBA
+       ORAA  #%10000000
+       ANDA  #%10001111
+       JSR   SENDSPI
+       ANDA  #%00001111
        JSR   SENDSPI
        JSR   DELAY
        RTS
 
 SENDDATA:
-       TAB                          ; Save A to B
-       RORA                         ; Shift right 4 times
+       TAB
        RORA
        RORA
        RORA
-       ORAA  #%11000000             ; Set RS=1 (data), E=1
-       ANDA  #%11001111             ; Mask unwanted bits
-       JSR   SENDSPI                ; Send high nibble
-       ANDA  #%01001111             ; E=0 (latch data)
+       RORA
+       ORAA  #%11000000
+       ANDA  #%11001111
+       JSR   SENDSPI
+       ANDA  #%01001111
        JSR   SENDSPI
        JSR   DELAY
 
-       TBA                          ; Restore A from B
-       ORAA  #%11000000             ; Set RS=1, E=1
-       ANDA  #%11001111             ; Mask unwanted bits
-       JSR   SENDSPI                ; Send low nibble
-       ANDA  #%01001111             ; E=0 (latch data)
+       TBA
+       ORAA  #%11000000
+       ANDA  #%11001111
+       JSR   SENDSPI
+       ANDA  #%01001111
        JSR   SENDSPI
        JSR   DELAY
        RTS
 
 SENDSPI:
-       BRCLR SPI0SR, #$20, *        ; Wait for SPI ready
-       STAA  SPI0DR                 ; Send data via SPI
+       BRCLR SPI0SR, #$20, *
+       STAA  SPI0DR
        RTS
 
 DELAY:
-       LDX   #10000                 ; Delay counter (100ms at 2MHz)
-again:
+       LDX   #10000
+D1:
        PSHB
        PULB
        PSHB
@@ -519,23 +625,21 @@ again:
        PSHB
        PULB
        DEX
-       BNE   again
+       BNE   D1
        RTS
 
 DelayADC:
-       LDX   #5000                  ; Delay for ADC power-up
-DelayLoop:
+       LDX   #5000
+D2:
        DEX
-       BNE   DelayLoop
+       BNE   D2
        RTS
 
-Exit:
-
-;**********************
-;*                 Interrupt Vectors                          *
-;**********************
+;=========================================================
+; INTERRUPT VECTORS
+;=========================================================
        ORG   $FFFE
-       DC.W  Entry                  ; Reset Vector
+       DC.W  Entry
 
        ORG   $FFCA
-       DC.W  MCCNT_ISR              ; Modulus Counter Interrupt Vector
+       DC.W  MCCNT_ISR
