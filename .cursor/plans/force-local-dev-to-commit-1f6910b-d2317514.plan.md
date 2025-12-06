@@ -1,4 +1,33 @@
-<!-- d2317514-f544-4e9d-b3ff-b1acaec4d23c e993218b-9b70-45f8-a4d9-95980395089a -->
+---
+name: Implement Lab 9 Buzzer Configuration
+overview: ""
+todos:
+  - id: 91f42dbb-53f3-4160-975f-e7b2fa365a78
+    content: Fetch from remote to ensure we have the latest commits
+    status: pending
+  - id: 6deb6528-2633-4a11-961d-c13fdacfff1b
+    content: Verify commit 1f6910b exists locally
+    status: pending
+  - id: 6828a42a-2181-4b26-be39-219218f2d2bf
+    content: Force reset local dev branch to commit 1f6910b
+    status: pending
+  - id: 90681fd3-d04e-42a9-a4dc-72b32f39203d
+    content: Verify final state - confirm branch is at correct commit
+    status: pending
+  - id: dc89eacf-6665-4ef8-8c6b-7587c0bc1fca
+    content: Remove 2-second buzzer beep from ARRIVED section
+    status: pending
+  - id: 1e51b665-c50b-4579-993e-58eef9ac0fa2
+    content: Add buzzer ON when door opens (red LED ON)
+    status: pending
+  - id: 292bb035-896c-4734-bbff-001fd1adddd6
+    content: Add buzzer OFF when door closes (red LED OFF)
+    status: pending
+  - id: ca789975-d236-4d64-94c2-ad41d19cb8cb
+    content: Verify PWM configuration matches Lab 9 (4kHz)
+    status: pending
+---
+
 # Implement Lab 9 Buzzer Configuration
 
 ## Overview
@@ -62,14 +91,3 @@ Replace PWM initialization with Lab 9 buzzer code and integrate buzzer to sound 
 - Frequency: 587Hz (Period = 426, Duty = 298, 70% duty cycle)
 - Buzzer should be enabled during: moving up, overload blinking, and overload detection
 - Buzzer should be disabled when: elevator arrives, overload clears, and when not moving up
-
-### To-dos
-
-- [ ] Fetch from remote to ensure we have the latest commits
-- [ ] Verify commit 1f6910b exists locally
-- [ ] Force reset local dev branch to commit 1f6910b
-- [ ] Verify final state - confirm branch is at correct commit
-- [ ] Remove 2-second buzzer beep from ARRIVED section
-- [ ] Add buzzer ON when door opens (red LED ON)
-- [ ] Add buzzer OFF when door closes (red LED OFF)
-- [ ] Verify PWM configuration matches Lab 9 (4kHz)
